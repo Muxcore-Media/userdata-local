@@ -1,0 +1,15 @@
+{
+  "name": "Userdata Local",
+  "description": "Durable per-user household library state: watch progress, continue-watching, favorites, and preferences.",
+  "version": "0.1.0",
+  "author": "MuxCore",
+  "roles": [
+    "household",
+    "media"
+  ],
+  "capabilities": [
+    "userdata.local",
+    "settings"
+  ],
+  "contracts": []
+}
