@@ -1,0 +1,17 @@
+run:
+  timeout: 120s
+  tests: true
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+
+issues:
+  exclude-rules:
+    - path: proto/gen/
+      linters:
+        - all

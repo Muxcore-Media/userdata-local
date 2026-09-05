@@ -1,0 +1,31 @@
+# Binaries
+/userdata-local
+/module
+/cmd/module/module
+
+# Dependencies
+vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+/dist/
+/build/
+/tmp/
+
+# Environment
+.env
+.env.local
+*.local.yaml
+
+# Go
+go.work
+go.work.sum
