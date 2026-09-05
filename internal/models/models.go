@@ -39,9 +39,9 @@ type FavoriteEntry struct {
 
 // DisplayPrefs holds UI display preferences.
 type DisplayPrefs struct {
-	Theme                  string `json:"theme"`
-	LibraryPageSize        int    `json:"libraryPageSize"`
-	ShowWatchedIndicators  bool   `json:"showWatchedIndicators"`
+	Theme                 string `json:"theme"`
+	LibraryPageSize       int    `json:"libraryPageSize"`
+	ShowWatchedIndicators bool   `json:"showWatchedIndicators"`
 }
 
 // HomePrefs controls home screen rows.
@@ -73,11 +73,11 @@ type ControlPrefs struct {
 
 // UserPreferences mirrors the client-side prefs blob.
 type UserPreferences struct {
-	Display    DisplayPrefs  `json:"display"`
-	Home       HomePrefs     `json:"home"`
-	Playback   PlaybackPrefs `json:"playback"`
-	Subtitles  SubtitlePrefs `json:"subtitles"`
-	Controls   ControlPrefs  `json:"controls"`
+	Display   DisplayPrefs  `json:"display"`
+	Home      HomePrefs     `json:"home"`
+	Playback  PlaybackPrefs `json:"playback"`
+	Subtitles SubtitlePrefs `json:"subtitles"`
+	Controls  ControlPrefs  `json:"controls"`
 }
 
 // DefaultPreferences returns client-compatible defaults.
@@ -129,11 +129,11 @@ type QueueItem struct {
 
 // Blob is the canonical per-user userdata document exchanged with clients.
 type Blob struct {
-	Progress  map[string]ProgressEntry  `json:"progress,omitempty"`
-	Favorites map[string]FavoriteEntry  `json:"favorites,omitempty"`
-	Prefs     *UserPreferences          `json:"prefs,omitempty"`
-	Playlists []Playlist                `json:"playlists,omitempty"`
-	Queue     []QueueItem               `json:"queue,omitempty"`
+	Progress  map[string]ProgressEntry `json:"progress,omitempty"`
+	Favorites map[string]FavoriteEntry `json:"favorites,omitempty"`
+	Prefs     *UserPreferences         `json:"prefs,omitempty"`
+	Playlists []Playlist               `json:"playlists,omitempty"`
+	Queue     []QueueItem              `json:"queue,omitempty"`
 }
 
 // EmptyBlob returns a blob with default preferences initialized.
