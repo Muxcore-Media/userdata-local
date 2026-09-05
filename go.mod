@@ -3,6 +3,7 @@ module github.com/Muxcore-Media/userdata-local
 go 1.26.4
 
 require (
+	github.com/Muxcore-Media/core v0.5.8
 	github.com/Muxcore-Media/core/pkg/contracts v0.5.8
 	github.com/Muxcore-Media/core/sdk/go/module v0.5.8
 	google.golang.org/grpc v1.82.1

@@ -9,10 +9,15 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/Muxcore-Media/core/pkg/contracts"
+	"github.com/Muxcore-Media/userdata-local/internal/auth"
 	"github.com/Muxcore-Media/userdata-local/internal/models"
 	"github.com/Muxcore-Media/userdata-local/internal/server"
 	"github.com/Muxcore-Media/userdata-local/internal/store"
 	userdatav1 "github.com/Muxcore-Media/userdata-local/proto/gen/muxcore/userdata/v1"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 )
 
 func testServer(t *testing.T) *server.Server {
@@ -22,7 +27,11 @@ func testServer(t *testing.T) *server.Server {
 		t.Fatalf("store: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	return server.New(st)
+	provider := auth.NewStaticProvider(map[string]contracts.Session{
+		"alice-token": {UserID: "alice", Roles: []string{"user"}},
+		"bob-token":   {UserID: "bob", Roles: []string{"user"}},
+	})
+	return server.New(st, auth.NewGuard(provider))
 }
 
 func TestHTTPUserdataPutGet(t *testing.T) {
@@ -40,6 +49,7 @@ func TestHTTPUserdataPutGet(t *testing.T) {
 		},
 	})
 	putReq := httptest.NewRequest(http.MethodPut, "/api/userdata", bytes.NewReader(body))
+	putReq.Header.Set("Authorization", "Bearer alice-token")
 	putReq.Header.Set("X-MuxCore-User-Id", "alice")
 	putRec := httptest.NewRecorder()
 	mux.ServeHTTP(putRec, putReq)
@@ -48,6 +58,7 @@ func TestHTTPUserdataPutGet(t *testing.T) {
 	}
 
 	getReq := httptest.NewRequest(http.MethodGet, "/api/userdata", nil)
+	getReq.Header.Set("Authorization", "Bearer alice-token")
 	getReq.Header.Set("X-MuxCore-User-Id", "alice")
 	getRec := httptest.NewRecorder()
 	mux.ServeHTTP(getRec, getReq)
@@ -63,9 +74,38 @@ func TestHTTPUserdataPutGet(t *testing.T) {
 	}
 }
 
+func TestHTTPUserdataRejectsSpoofedUserID(t *testing.T) {
+	srv := testServer(t)
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/userdata", nil)
+	req.Header.Set("Authorization", "Bearer alice-token")
+	req.Header.Set("X-MuxCore-User-Id", "bob")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHTTPUserdataRejectsMissingBearer(t *testing.T) {
+	srv := testServer(t)
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/userdata", nil)
+	req.Header.Set("X-MuxCore-User-Id", "alice")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestGRPCPutListContinueWatching(t *testing.T) {
 	srv := testServer(t)
-	ctx := context.Background()
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(auth.AuthTokenMetadataKey, "bob-token"))
 	watched := false
 	in := models.Blob{
 		Progress: map[string]models.ProgressEntry{
@@ -89,5 +129,28 @@ func TestGRPCPutListContinueWatching(t *testing.T) {
 	}
 	if len(items) != 1 || items[0].ID != "m1" {
 		t.Fatalf("items=%+v", items)
+	}
+}
+
+func TestGRPCRejectsSpoofedUserID(t *testing.T) {
+	srv := testServer(t)
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(auth.AuthTokenMetadataKey, "alice-token"))
+
+	_, err := srv.Get(ctx, &userdatav1.GetRequest{UserId: "bob"})
+	if err == nil {
+		t.Fatal("expected permission denied")
+	}
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("code=%v err=%v", status.Code(err), err)
+	}
+}
+
+func TestGRPCAllowsMeshCaller(t *testing.T) {
+	srv := testServer(t)
+	ctx := auth.VerifiedMeshContext("muxcore")
+
+	_, err := srv.Get(ctx, &userdatav1.GetRequest{UserId: "alice"})
+	if err != nil {
+		t.Fatalf("Get: %v", err)
 	}
 }

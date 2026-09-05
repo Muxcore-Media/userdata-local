@@ -11,20 +11,20 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	userdatav1 "github.com/Muxcore-Media/userdata-local/proto/gen/muxcore/userdata/v1"
+	"github.com/Muxcore-Media/userdata-local/internal/auth"
 	"github.com/Muxcore-Media/userdata-local/internal/store"
+	userdatav1 "github.com/Muxcore-Media/userdata-local/proto/gen/muxcore/userdata/v1"
 )
-
-const userIDHeader = "X-MuxCore-User-Id"
 
 // Server implements UserDataService and HTTP handlers.
 type Server struct {
 	userdatav1.UnimplementedUserDataServiceServer
 	store *store.Store
+	guard *auth.Guard
 }
 
-func New(st *store.Store) *Server {
-	return &Server{store: st}
+func New(st *store.Store, guard *auth.Guard) *Server {
+	return &Server{store: st, guard: guard}
 }
 
 func (s *Server) RegisterWithGRPC(srv *grpc.Server) {
@@ -40,8 +40,8 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 }
 
 func (s *Server) Get(ctx context.Context, req *userdatav1.GetRequest) (*userdatav1.GetResponse, error) {
-	if strings.TrimSpace(req.GetUserId()) == "" {
-		return nil, status.Error(codes.InvalidArgument, "user_id is required")
+	if err := s.guard.AuthorizeGRPC(ctx, req.GetUserId()); err != nil {
+		return nil, err
 	}
 	blob, revision, err := s.store.Get(req.GetUserId())
 	if err != nil {
@@ -55,8 +55,8 @@ func (s *Server) Get(ctx context.Context, req *userdatav1.GetRequest) (*userdata
 }
 
 func (s *Server) Put(ctx context.Context, req *userdatav1.PutRequest) (*userdatav1.PutResponse, error) {
-	if strings.TrimSpace(req.GetUserId()) == "" {
-		return nil, status.Error(codes.InvalidArgument, "user_id is required")
+	if err := s.guard.AuthorizeGRPC(ctx, req.GetUserId()); err != nil {
+		return nil, err
 	}
 	incoming, err := store.ParseBlob(req.GetJson())
 	if err != nil {
@@ -74,8 +74,8 @@ func (s *Server) Put(ctx context.Context, req *userdatav1.PutRequest) (*userdata
 }
 
 func (s *Server) ListContinueWatching(ctx context.Context, req *userdatav1.ListContinueWatchingRequest) (*userdatav1.ListContinueWatchingResponse, error) {
-	if strings.TrimSpace(req.GetUserId()) == "" {
-		return nil, status.Error(codes.InvalidArgument, "user_id is required")
+	if err := s.guard.AuthorizeGRPC(ctx, req.GetUserId()); err != nil {
+		return nil, err
 	}
 	limit := int(req.GetLimit())
 	if limit <= 0 {
@@ -93,9 +93,13 @@ func (s *Server) ListContinueWatching(ctx context.Context, req *userdatav1.ListC
 }
 
 func (s *Server) handleUserdata(w http.ResponseWriter, r *http.Request) {
-	userID := strings.TrimSpace(r.Header.Get(userIDHeader))
-	if userID == "" {
-		http.Error(w, "missing X-MuxCore-User-Id header", http.StatusUnauthorized)
+	_, userID, err := s.guard.AuthenticateHTTP(r)
+	if err != nil {
+		code := http.StatusUnauthorized
+		if strings.Contains(err.Error(), "does not match") || strings.Contains(err.Error(), "permission") {
+			code = http.StatusForbidden
+		}
+		http.Error(w, err.Error(), code)
 		return
 	}
 	switch r.Method {

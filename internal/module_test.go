@@ -4,14 +4,20 @@ import (
 	"context"
 	"testing"
 
+	"github.com/Muxcore-Media/core/pkg/contracts"
 	"github.com/Muxcore-Media/userdata-local/internal"
+	"github.com/Muxcore-Media/userdata-local/internal/auth"
 )
 
 func TestModuleLifecycle(t *testing.T) {
+	provider := auth.NewStaticProvider(map[string]contracts.Session{
+		"test-token": {UserID: "alice", Roles: []string{"user"}},
+	})
 	m := internal.NewModule(internal.Config{
-		GRPCAddr: "127.0.0.1:0",
-		HTTPAddr: "127.0.0.1:0",
-		DBPath:   t.TempDir() + "/userdata.db",
+		GRPCAddr:     "127.0.0.1:0",
+		HTTPAddr:     "127.0.0.1:0",
+		DBPath:       t.TempDir() + "/userdata.db",
+		AuthProvider: provider,
 	})
 	ctx := context.Background()
 	if err := m.Init(ctx); err != nil {
