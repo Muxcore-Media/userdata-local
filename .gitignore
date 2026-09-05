@@ -20,6 +20,7 @@ Thumbs.db
 /dist/
 /build/
 /tmp/
+/deps/
 
 # Environment
 .env

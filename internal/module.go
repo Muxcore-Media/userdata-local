@@ -11,9 +11,12 @@ import (
 	"sync"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 
 	"github.com/Muxcore-Media/core/pkg/contracts"
 	modulesdk "github.com/Muxcore-Media/core/sdk/go/module"
+	"github.com/Muxcore-Media/userdata-local/internal/auth"
+	"github.com/Muxcore-Media/userdata-local/internal/grpctls"
 	"github.com/Muxcore-Media/userdata-local/internal/server"
 	"github.com/Muxcore-Media/userdata-local/internal/store"
 )
@@ -25,17 +28,21 @@ const (
 
 // Module is the MuxCore userdata-local sidecar.
 type Module struct {
-	store    *store.Store
-	srv      *server.Server
-	grpcSrv  *grpc.Server
-	httpSrv  *http.Server
-	grpcLis  net.Listener
-	httpLis  net.Listener
-	cfgMu    sync.RWMutex
-	id       string
-	grpcAddr string
-	httpAddr string
-	dbPath   string
+	store        *store.Store
+	srv          *server.Server
+	guard        *auth.Guard
+	authConn     *grpc.ClientConn
+	authProvider contracts.AuthProvider
+	grpcSrv      *grpc.Server
+	httpSrv      *http.Server
+	grpcLis      net.Listener
+	httpLis      net.Listener
+	cfgMu        sync.RWMutex
+	id           string
+	grpcAddr     string
+	httpAddr     string
+	dbPath       string
+	authAddr     string
 }
 
 // Config holds module settings. Non-empty fields override environment.
@@ -44,6 +51,9 @@ type Config struct {
 	GRPCAddr string
 	HTTPAddr string
 	DBPath   string
+	AuthAddr string
+	// AuthProvider overrides the default auth-local sidecar client (tests).
+	AuthProvider contracts.AuthProvider
 }
 
 // NewModule constructs the module with env fallbacks.
@@ -60,6 +70,9 @@ func NewModule(cfg Config) *Module {
 	if cfg.DBPath == "" {
 		cfg.DBPath = os.Getenv("USERDATA_LOCAL_DB_PATH")
 	}
+	if cfg.AuthAddr == "" {
+		cfg.AuthAddr = auth.ResolveAuthLocalAddr()
+	}
 	if cfg.GRPCAddr == "" {
 		cfg.GRPCAddr = ":9703"
 	}
@@ -75,10 +88,12 @@ func NewModule(cfg Config) *Module {
 		}
 	}
 	return &Module{
-		id:       cfg.ID,
-		grpcAddr: cfg.GRPCAddr,
-		httpAddr: cfg.HTTPAddr,
-		dbPath:   cfg.DBPath,
+		id:           cfg.ID,
+		grpcAddr:     cfg.GRPCAddr,
+		httpAddr:     cfg.HTTPAddr,
+		dbPath:       cfg.DBPath,
+		authAddr:     cfg.AuthAddr,
+		authProvider: cfg.AuthProvider,
 	}
 }
 
@@ -106,7 +121,19 @@ func (m *Module) Init(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("init store: %w", err)
 	}
-	m.srv = server.New(m.store)
+
+	provider := m.authProvider
+	if provider == nil {
+		conn, err := auth.DialAuthLocal(m.authAddr)
+		if err != nil {
+			return fmt.Errorf("dial auth-local at %s: %w", m.authAddr, err)
+		}
+		m.authConn = conn
+		provider = auth.NewSidecarAuthProvider(conn)
+		slog.Info("userdata-local auth wired to auth-local", "addr", m.authAddr)
+	}
+	m.guard = auth.NewGuard(provider)
+	m.srv = server.New(m.store, m.guard)
 
 	m.grpcLis, err = net.Listen("tcp", m.grpcAddr)
 	if err != nil {
@@ -116,12 +143,26 @@ func (m *Module) Init(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("listen HTTP %s: %w", m.httpAddr, err)
 	}
-	slog.Info("userdata-local initialized", "grpc", m.grpcAddr, "http", m.httpAddr, "db", m.dbPath)
+	slog.Info("userdata-local initialized", "grpc", m.grpcAddr, "http", m.httpAddr, "db", m.dbPath, "auth", m.authAddr)
 	return nil
 }
 
 func (m *Module) Start(ctx context.Context) error {
-	m.grpcSrv = grpc.NewServer()
+	var grpcOpts []grpc.ServerOption
+	tlsCfg, err := grpctls.ServerConfig(m.dbPath)
+	if err != nil {
+		return fmt.Errorf("gRPC TLS: %w", err)
+	}
+	if tlsCfg != nil {
+		grpcOpts = append(grpcOpts, grpc.Creds(credentials.NewTLS(tlsCfg)))
+		slog.Info("userdata-local gRPC TLS enabled", "addr", m.grpcAddr)
+	} else {
+		slog.Warn("userdata-local gRPC listening without TLS (dev only)",
+			"addr", m.grpcAddr,
+			"hint", "unset MUXCORE_INSECURE_DISABLE_TLS for production",
+		)
+	}
+	m.grpcSrv = grpc.NewServer(grpcOpts...)
 	m.srv.RegisterWithGRPC(m.grpcSrv)
 	modulesdk.RegisterSettings(m.grpcSrv, m.id, m)
 	go func() {
@@ -149,6 +190,9 @@ func (m *Module) Stop(ctx context.Context) error {
 	}
 	if m.httpSrv != nil {
 		_ = m.httpSrv.Shutdown(ctx)
+	}
+	if m.authConn != nil {
+		_ = m.authConn.Close()
 	}
 	if m.store != nil {
 		_ = m.store.Close()
