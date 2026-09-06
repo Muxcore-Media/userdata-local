@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Preserve `prefs.parental` through Put/Get so admin-ui snake_case kids/max rating/PIN survive (umbrella#89 residual A)
+
 ## 0.1.0 — 2026-09-05
 
 - Initial MuxCore sidecar implementation

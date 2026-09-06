@@ -145,6 +145,50 @@ func TestGRPCRejectsSpoofedUserID(t *testing.T) {
 	}
 }
 
+func TestHTTPUserdataPreservesSnakeCaseParental(t *testing.T) {
+	srv := testServer(t)
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+
+	body := []byte(`{"prefs":{"parental":{"kids_mode":true,"max_parental_rating":"PG","pin_hash":"abc123def456"}}}`)
+	putReq := httptest.NewRequest(http.MethodPut, "/api/userdata", bytes.NewReader(body))
+	putReq.Header.Set("Authorization", "Bearer alice-token")
+	putReq.Header.Set("X-MuxCore-User-Id", "alice")
+	putRec := httptest.NewRecorder()
+	mux.ServeHTTP(putRec, putReq)
+	if putRec.Code != http.StatusOK {
+		t.Fatalf("PUT status=%d body=%s", putRec.Code, putRec.Body.String())
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/api/userdata", nil)
+	getReq.Header.Set("Authorization", "Bearer alice-token")
+	getReq.Header.Set("X-MuxCore-User-Id", "alice")
+	getRec := httptest.NewRecorder()
+	mux.ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("GET status=%d body=%s", getRec.Code, getRec.Body.String())
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(getRec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode blob: %v", err)
+	}
+	prefs, _ := got["prefs"].(map[string]any)
+	parental, _ := prefs["parental"].(map[string]any)
+	if parental == nil {
+		t.Fatalf("prefs.parental missing: %s", getRec.Body.String())
+	}
+	if parental["kids_mode"] != true {
+		t.Fatalf("kids_mode=%v", parental["kids_mode"])
+	}
+	if parental["max_parental_rating"] != "PG" {
+		t.Fatalf("max_parental_rating=%v", parental["max_parental_rating"])
+	}
+	if parental["pin_hash"] != "abc123def456" {
+		t.Fatalf("pin_hash=%v", parental["pin_hash"])
+	}
+}
+
 func TestGRPCAllowsMeshCaller(t *testing.T) {
 	srv := testServer(t)
 	ctx := auth.VerifiedMeshContext("muxcore")

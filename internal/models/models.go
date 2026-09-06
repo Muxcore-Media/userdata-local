@@ -1,5 +1,7 @@
 package models
 
+import "encoding/json"
+
 // MediaKind identifies the library item type stored in userdata blobs.
 type MediaKind string
 
@@ -72,12 +74,16 @@ type ControlPrefs struct {
 }
 
 // UserPreferences mirrors the client-side prefs blob.
+// Parental is stored as raw JSON so admin-ui snake_case (kids_mode,
+// max_parental_rating, pin_hash) and any extra keys survive Put/Get
+// (umbrella#89 residual A). media-ui-app normalizes those keys on read.
 type UserPreferences struct {
-	Display   DisplayPrefs  `json:"display"`
-	Home      HomePrefs     `json:"home"`
-	Playback  PlaybackPrefs `json:"playback"`
-	Subtitles SubtitlePrefs `json:"subtitles"`
-	Controls  ControlPrefs  `json:"controls"`
+	Display   DisplayPrefs    `json:"display"`
+	Home      HomePrefs       `json:"home"`
+	Playback  PlaybackPrefs   `json:"playback"`
+	Subtitles SubtitlePrefs   `json:"subtitles"`
+	Controls  ControlPrefs    `json:"controls"`
+	Parental  json.RawMessage `json:"parental,omitempty"`
 }
 
 // DefaultPreferences returns client-compatible defaults.
