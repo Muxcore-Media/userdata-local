@@ -1,6 +1,7 @@
 package store_test
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"testing"
 	"time"
@@ -158,5 +159,44 @@ func TestMarkWatched(t *testing.T) {
 	}
 	if len(items) != 0 {
 		t.Fatalf("watched item in continue list: %+v", items)
+	}
+}
+
+func TestPutGetPreservesSnakeCaseParental(t *testing.T) {
+	st := openTestStore(t)
+	incoming, err := store.ParseBlob([]byte(`{
+		"prefs": {
+			"parental": {
+				"kids_mode": true,
+				"max_parental_rating": "PG",
+				"pin_hash": "abc123def456"
+			}
+		}
+	}`))
+	if err != nil {
+		t.Fatalf("ParseBlob: %v", err)
+	}
+	if _, _, err := st.Put("user-parental", incoming); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	blob, _, err := st.Get("user-parental")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if blob.Prefs == nil || len(blob.Prefs.Parental) == 0 {
+		t.Fatalf("parental missing after Get: %+v", blob.Prefs)
+	}
+	var parental map[string]any
+	if err := json.Unmarshal(blob.Prefs.Parental, &parental); err != nil {
+		t.Fatalf("decode parental: %v", err)
+	}
+	if parental["kids_mode"] != true {
+		t.Fatalf("kids_mode=%v", parental["kids_mode"])
+	}
+	if parental["max_parental_rating"] != "PG" {
+		t.Fatalf("max_parental_rating=%v", parental["max_parental_rating"])
+	}
+	if parental["pin_hash"] != "abc123def456" {
+		t.Fatalf("pin_hash=%v", parental["pin_hash"])
 	}
 }

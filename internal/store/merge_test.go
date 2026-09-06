@@ -1,6 +1,7 @@
 package store_test
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/Muxcore-Media/userdata-local/internal/models"
@@ -41,5 +42,31 @@ func TestParseBlobDefaults(t *testing.T) {
 	}
 	if blob.Favorites == nil || blob.Prefs == nil {
 		t.Fatalf("blob=%+v", blob)
+	}
+}
+
+func TestParseBlobKeepsSnakeCaseParental(t *testing.T) {
+	blob, err := store.ParseBlob([]byte(`{
+		"prefs": {
+			"parental": {
+				"kids_mode": true,
+				"max_parental_rating": "PG-13",
+				"pin_hash": "deadbeef",
+				"allow_unrated": false
+			}
+		}
+	}`))
+	if err != nil {
+		t.Fatalf("ParseBlob: %v", err)
+	}
+	if blob.Prefs == nil || len(blob.Prefs.Parental) == 0 {
+		t.Fatal("parental dropped by ParseBlob")
+	}
+	var parental map[string]any
+	if err := json.Unmarshal(blob.Prefs.Parental, &parental); err != nil {
+		t.Fatalf("decode parental: %v", err)
+	}
+	if parental["kids_mode"] != true || parental["max_parental_rating"] != "PG-13" || parental["pin_hash"] != "deadbeef" {
+		t.Fatalf("parental=%v", parental)
 	}
 }
