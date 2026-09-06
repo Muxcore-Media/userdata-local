@@ -83,7 +83,7 @@ Proto: `proto/muxcore/userdata/v1/userdata.proto`
 |-----|---------|
 | `progress` | Resume position, watched flag, continue-watching source |
 | `favorites` | Starred titles |
-| `prefs` | Display/home/playback preferences (stored for sync) |
+| `prefs` | Display/home/playback preferences (stored for sync), plus pass-through `parental` |
 | `playlists`, `queue` | Pass-through sections for client sync |
 
 Progress merge uses `updatedAt` (newer wins). Watched auto-detection uses the 92% threshold from native clients.
