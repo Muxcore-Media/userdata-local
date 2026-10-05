@@ -80,12 +80,8 @@ func NewModule(cfg Config) *Module {
 		cfg.HTTPAddr = ":9701"
 	}
 	if cfg.DBPath == "" {
-		home, err := os.UserHomeDir()
-		if err != nil || home == "" {
-			cfg.DBPath = "userdata.db"
-		} else {
-			cfg.DBPath = filepath.Join(home, ".muxcore", "userdata.db")
-		}
+		cfg.DBPath = defaultDBPath()
+		warnLegacyDB(cfg.DBPath)
 	}
 	return &Module{
 		id:           cfg.ID,
