@@ -9,11 +9,13 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 
 	"github.com/Muxcore-Media/core/pkg/contracts"
+	"github.com/Muxcore-Media/core/sdk/go/client"
 	modulesdk "github.com/Muxcore-Media/core/sdk/go/module"
 	manifest "github.com/Muxcore-Media/userdata-local"
 	"github.com/Muxcore-Media/userdata-local/internal/auth"
@@ -43,6 +45,8 @@ type Module struct {
 	httpAddr     string
 	dbPath       string
 	authAddr     string
+	mc           atomic.Pointer[client.Client]
+	subCancel    context.CancelFunc
 }
 
 // Config holds module settings. Non-empty fields override environment.
@@ -177,10 +181,20 @@ func (m *Module) Start(ctx context.Context) error {
 			slog.Error("userdata-local HTTP error", "error", err)
 		}
 	}()
+
+	subCtx, cancel := context.WithCancel(context.Background())
+	m.subCancel = cancel
+	go m.consumeUserDeleted(subCtx)
 	return nil
 }
 
 func (m *Module) Stop(ctx context.Context) error {
+	if m.subCancel != nil {
+		m.subCancel()
+	}
+	if c := m.mc.Swap(nil); c != nil {
+		c.Close()
+	}
 	if m.grpcSrv != nil {
 		m.grpcSrv.GracefulStop()
 	}

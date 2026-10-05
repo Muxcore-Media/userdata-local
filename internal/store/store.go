@@ -4,12 +4,18 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 
 	_ "modernc.org/sqlite"
 
 	"github.com/Muxcore-Media/userdata-local/internal/models"
 )
+
+// ProfileBlobSep separates an account id from an extra viewer profile id
+// (ADR-0024). Account blobs stay keyed by the account id. Extra profiles use
+// accountID + ProfileBlobSep + profileID.
+const ProfileBlobSep = "~p~"
 
 // Store persists per-user userdata blobs in SQLite.
 type Store struct {
@@ -188,6 +194,42 @@ func (s *Store) saveLocked(userID string, blob models.Blob, revision int64) (mod
 		return models.Blob{}, 0, fmt.Errorf("persist blob: %w", err)
 	}
 	return blob, revision, nil
+}
+
+// DeleteAccount removes the account blob and every profile sibling whose user
+// id starts with accountID + ProfileBlobSep. Missing rows are not an error.
+// accountID must be the auth-local user id, not a profile blob key.
+func (s *Store) DeleteAccount(accountID string) (int64, error) {
+	accountID = strings.TrimSpace(accountID)
+	if accountID == "" {
+		return 0, fmt.Errorf("user_id is required")
+	}
+	if strings.Contains(accountID, ProfileBlobSep) {
+		return 0, fmt.Errorf("user_id is a profile blob, not an account")
+	}
+	like := escapeLike(accountID) + ProfileBlobSep + "%"
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	res, err := s.db.Exec(
+		`DELETE FROM user_blobs WHERE user_id = ? OR user_id LIKE ? ESCAPE '\'`,
+		accountID, like,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("delete account blobs: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
+func escapeLike(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `%`, `\%`)
+	s = strings.ReplaceAll(s, `_`, `\_`)
+	return s
 }
 
 // ListContinueWatching returns filtered progress entries for a user.
