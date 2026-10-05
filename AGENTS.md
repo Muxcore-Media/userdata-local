@@ -24,7 +24,8 @@ MuxCore sidecar module (`userdata-local`).
 |----------|---------|-------------|
 | `USERDATA_LOCAL_GRPC_ADDR` | `:9703` | gRPC listen address |
 | `USERDATA_LOCAL_HTTP_ADDR` | `:9701` | HTTP listen address (`GET/PUT /api/userdata`) |
-| `USERDATA_LOCAL_DB_PATH` | `~/.muxcore/userdata.db` | SQLite database path |
+| `USERDATA_LOCAL_DATA_DIR` | `$MUXCORE_DATA_DIR/userdata`, else `./data/userdata` | Module data dir (backed up, ADR-0013) |
+| `USERDATA_LOCAL_DB_PATH` | `<data dir>/userdata.db` | SQLite database path (override) |
 | `AUTH_LOCAL_GRPC_ADDR` | `localhost:9403` | auth-local gRPC for session validation |
 | `MUXCORE_GRPC_ADDR` | — | Core mesh address |
 | `MUXCORE_MODULE_ID` | `userdata-local` | Module ID override |

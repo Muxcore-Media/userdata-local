@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.4] - 2026-10-05
+
+
+### Changed
+- Default database moved from `$HOME/.muxcore/userdata.db` to `<data dir>/userdata.db` (`USERDATA_LOCAL_DATA_DIR`, else `$MUXCORE_DATA_DIR/userdata`, else `./data/userdata`) so household progress/favorites fall under backups (ADR-0013). `USERDATA_LOCAL_DB_PATH` still overrides. If only the legacy file exists, startup logs a warning with the exact `mv` command; data is never moved automatically.
+
 ## [0.1.3] - 2026-10-05
 
 ### Changed

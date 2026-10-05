@@ -27,7 +27,8 @@ Each household user has one JSON blob (`progress`, `favorites`, `prefs`, `playli
 |----------|---------|-------------|
 | `USERDATA_LOCAL_GRPC_ADDR` | `:9703` | gRPC listen address |
 | `USERDATA_LOCAL_HTTP_ADDR` | `:9701` | HTTP listen address |
-| `USERDATA_LOCAL_DB_PATH` | `~/.muxcore/userdata.db` | SQLite database file |
+| `USERDATA_LOCAL_DATA_DIR` | `$MUXCORE_DATA_DIR/userdata`, else `./data/userdata` | Module data dir (inside backup coverage, ADR-0013) |
+| `USERDATA_LOCAL_DB_PATH` | `<data dir>/userdata.db` | SQLite database file (overrides the data-dir default) |
 | `AUTH_LOCAL_GRPC_ADDR` | `localhost:9403` | auth-local gRPC address for session validation |
 | `MUXCORE_GRPC_ADDR` | — | Core mesh address |
 | `MUXCORE_MODULE_ID` | `userdata-local` | Module ID override |
