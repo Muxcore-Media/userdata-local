@@ -88,9 +88,10 @@ jobs:
           curl -fsSL https://github.com/protocolbuffers/protobuf/releases/download/v25.3/protoc-25.3-linux-x86_64.zip -o /tmp/protoc.zip
           sudo unzip -qo /tmp/protoc.zip -d /usr/local
       - name: Regenerate
+        # Isolated GOBIN with default generator versions; a Makefile that pins its own
+        # plugin versions (go install …@vX) overrides them in the same GOBIN.
         run: |
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
-          export PATH="$(go env GOPATH)/bin:$PATH"
+          export GOBIN="$RUNNER_TEMP/protobin" PATH="$RUNNER_TEMP/protobin:$PATH"
           go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.6
           go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.5.1
           make proto
