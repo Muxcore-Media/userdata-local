@@ -15,6 +15,7 @@ import (
 
 	"github.com/Muxcore-Media/core/pkg/contracts"
 	modulesdk "github.com/Muxcore-Media/core/sdk/go/module"
+	manifest "github.com/Muxcore-Media/userdata-local"
 	"github.com/Muxcore-Media/userdata-local/internal/auth"
 	"github.com/Muxcore-Media/userdata-local/internal/grpctls"
 	"github.com/Muxcore-Media/userdata-local/internal/server"
@@ -22,8 +23,7 @@ import (
 )
 
 const (
-	moduleID      = "userdata-local"
-	moduleVersion = "0.1.0"
+	moduleID = "userdata-local"
 )
 
 // Module is the MuxCore userdata-local sidecar.
@@ -101,7 +101,7 @@ func (m *Module) Info() contracts.ModuleInfo {
 	return contracts.ModuleInfo{
 		ID:           m.id,
 		Name:         "Userdata Local",
-		Version:      moduleVersion,
+		Version:      modulesdk.ManifestVersion(manifest.ManifestJSON),
 		Roles:        []string{"household", "media"},
 		Description:  "Durable per-user household library state (progress, favorites, continue-watching)",
 		Author:       "MuxCore",
