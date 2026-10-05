@@ -1,6 +1,13 @@
 # Changelog
 
-## Unreleased
+## [0.1.1] - 2026-10-05
+
+
+### Added
+- Upgrade test (`internal/store/upgrade_test.go`) opening the committed v0.1.0 snapshot (`internal/store/testdata/upgrade/`) with the current code (ADR-0015, NFR-DATA-002, FR-INS-005).
+
+### Changed
+- Test dependency `core/sdk/go/module` v0.6.1 (moduletest); `modernc.org/sqlite` resolved to v1.55.0 transitively.
 
 ## [0.1.0] - 2026-10-05
 

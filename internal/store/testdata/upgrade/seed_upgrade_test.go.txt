@@ -1,0 +1,51 @@
+//go:build upgradeseed
+
+package store_test
+
+import (
+	"os"
+	"testing"
+
+	"github.com/Muxcore-Media/userdata-local/internal/models"
+	"github.com/Muxcore-Media/userdata-local/internal/store"
+)
+
+func TestUpgradeSeed(t *testing.T) {
+	path := os.Getenv("UPGRADE_SEED_DB")
+	if path == "" {
+		t.Skip("UPGRADE_SEED_DB not set")
+	}
+	st, err := store.New(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	yr := 1999
+	w := true
+	nw := false
+	for _, u := range []string{"alice@example.com", "bob"} {
+		if _, _, err := st.Put(u, models.Blob{
+			Progress: map[string]models.ProgressEntry{
+				"movie-1": {ID: "movie-1", Kind: models.MediaKindMovie, Title: "Heat", Href: "/movies/movie-1", PositionSec: 120, DurationSec: 3600, UpdatedAt: "2026-01-02T03:04:05Z", Watched: &nw},
+				"ep-9":    {ID: "ep-9", Kind: models.MediaKindEpisode, Title: "Pilot", Href: "/tv/ep-9", PositionSec: 3500, DurationSec: 3600, UpdatedAt: "2026-01-03T03:04:05Z", Watched: &w},
+			},
+			Favorites: map[string]models.FavoriteEntry{
+				"movie-2": {ID: "movie-2", Kind: models.MediaKindMovie, Title: "Matrix", Href: "/movies/movie-2", Year: &yr},
+			},
+			Playlists: []models.Playlist{{ID: "pl-1", Name: "Weekend", ItemIDs: []string{"movie-1", "movie-2"}}},
+			Queue:     []models.QueueItem{{ID: "movie-2", Kind: models.MediaKindMovie, Title: "Matrix", Href: "/movies/movie-2"}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// second put on alice bumps revision to 2 and sets parental prefs (PIN hash: personal data)
+	prefs := models.DefaultPreferences()
+	prefs.Display.Theme = "light"
+	prefs.Subtitles.Language = "fra"
+	prefs.Parental = []byte(`{"kids_mode":true,"max_parental_rating":"PG","pin_hash":"abc123"}`)
+	if _, _, err := st.Put("alice@example.com", models.Blob{Prefs: &prefs}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
