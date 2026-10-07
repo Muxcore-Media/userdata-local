@@ -7,7 +7,7 @@ MuxCore sidecar module (`userdata-local`).
 | Field | Value |
 |-------|-------|
 | Directory | `userdata-local` |
-| Capabilities | `userdata.local`, `settings` |
+| Capabilities | `userdata.local`, `settings`, `userdata.parental-policy.v1` |
 | Contracts | none declared (blob JSON matches muxcore-ios / media-ui-app) |
 
 ## Agent rules
@@ -17,6 +17,7 @@ MuxCore sidecar module (`userdata-local`).
 - Match existing Go patterns; run `gofmt` and `go test ./...` before finishing.
 - Offline/fixture tests only — no live download or pirate services.
 - `contracts-media` has no userdata event types yet; blob schema is documented in README.
+- Parental authority is a separate, currently unused resource (umbrella ADR-0030); never promote writable `prefs.parental` into authoritative policy or claim this producer enforces media access.
 
 ## Settings / environment
 
@@ -44,6 +45,7 @@ make build
 
 - gRPC: `muxcore.userdata.v1.UserDataService` (`Get`, `Put`, `ListContinueWatching`)
 - HTTP: `GET/PUT /api/userdata` with JSON blob body
-- Store: SQLite table `user_blobs` keyed by `user_id`
+- HTTP: `GET/PUT /api/parental-policy`; fresh bearer, verified tenant, self/admin reads and admin-only revision-checked writes (README contract)
+- Store: SQLite `user_blobs` keyed by `user_id`; independent `parental_policies` keyed by `(tenant_id,user_id)`
 
 Tracked by https://github.com/Muxcore-Media/umbrella/issues/19

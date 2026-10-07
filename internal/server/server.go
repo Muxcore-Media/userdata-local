@@ -33,6 +33,7 @@ func (s *Server) RegisterWithGRPC(srv *grpc.Server) {
 
 func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/userdata", s.handleUserdata)
+	mux.HandleFunc("/api/parental-policy", s.handleParentalPolicy)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"status":"ok"}`))

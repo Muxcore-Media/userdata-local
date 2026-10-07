@@ -40,7 +40,7 @@ func TestModuleInfo(t *testing.T) {
 	if info.ID != "userdata-local" {
 		t.Errorf("ID=%q", info.ID)
 	}
-	foundUserdata, foundSettings := false, false
+	foundUserdata, foundSettings, foundParental := false, false, false
 	for _, c := range info.Capabilities {
 		if c == "userdata.local" {
 			foundUserdata = true
@@ -48,8 +48,11 @@ func TestModuleInfo(t *testing.T) {
 		if c == "settings" {
 			foundSettings = true
 		}
+		if c == "userdata.parental-policy.v1" {
+			foundParental = true
+		}
 	}
-	if !foundUserdata || !foundSettings {
+	if !foundUserdata || !foundSettings || !foundParental {
 		t.Fatalf("capabilities=%v", info.Capabilities)
 	}
 }
