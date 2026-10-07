@@ -20,6 +20,7 @@ import (
 	"github.com/Muxcore-Media/userdata-local/internal/grpctls"
 	"github.com/Muxcore-Media/userdata-local/internal/server"
 	"github.com/Muxcore-Media/userdata-local/internal/store"
+	"github.com/Muxcore-Media/userdata-local/parental"
 )
 
 const (
@@ -101,7 +102,7 @@ func (m *Module) Info() contracts.ModuleInfo {
 		Roles:        []string{"household", "media"},
 		Description:  "Durable per-user household library state (progress, favorites, continue-watching)",
 		Author:       "MuxCore",
-		Capabilities: []string{"userdata.local", "settings"},
+		Capabilities: []string{"userdata.local", "settings", parental.Capability},
 		HTTPAddr:     m.httpAddr,
 	}
 }

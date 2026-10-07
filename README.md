@@ -76,6 +76,8 @@ Proto: `proto/muxcore/userdata/v1/userdata.proto`
 |--------|------|-------------|
 | `GET` | `/api/userdata` | Return merged blob for authenticated user |
 | `PUT` | `/api/userdata` | Merge request JSON blob; return merged blob |
+| `GET` | `/api/parental-policy` | Read authoritative policy for self or a same-tenant account as admin |
+| `PUT` | `/api/parental-policy` | Admin-only, revision-checked policy replacement |
 | `GET` | `/health` | Unauthenticated health check |
 
 ### Blob sections (in scope)
@@ -88,6 +90,87 @@ Proto: `proto/muxcore/userdata/v1/userdata.proto`
 | `playlists`, `queue` | Pass-through sections for client sync |
 
 Progress merge uses `updatedAt` (newer wins). Watched auto-detection uses the 92% threshold from native clients.
+
+### Authoritative parental policy (provider foundation)
+
+The separate `userdata.parental-policy.v1` resource implements the producer contract
+in umbrella ADR-0030. Existing BFF/admin flows do not consume it yet, and this
+addition does **not** enforce parental restrictions on media. FR-PLAY-007 remains
+partial. Existing userdata preferences, including pass-through `prefs.parental`,
+remain untrusted client state and never initialize or overwrite this resource.
+
+Both methods require `Authorization: Bearer <current-session>` and
+`X-MuxCore-User-Id: <target-account>`. Only this bearer is accepted: cookies,
+`x-auth-token`, module certificates and identity/tenant headers cannot substitute
+for it. Each request revalidates current roles and tenant with auth-local.
+Users can read their own policy. Admins can read/write their own or another
+existing account in the same verified tenant; managers cannot write policy.
+Another account is resolved through auth-local `ListUsers`. Empty tenant is the
+single-household scope, not a wildcard. Query selectors are unsupported.
+
+GET returns trusted `user_id` and `tenant_id` with one of these states:
+
+```json
+{"user_id":"kid","tenant_id":"home","state":"unconfigured","revision":0,"policy":null}
+```
+
+```json
+{"user_id":"kid","tenant_id":"home","state":"configured","revision":1,"policy":{"version":1,"mode":"unrestricted","rules":null},"updated_at":"2026-10-07T00:00:00Z"}
+```
+
+Unconfigured, unavailable and explicit unrestricted are distinct. Future
+consumers must not interpret missing records, unsupported capability, invalid
+data or failed requests as unrestricted access.
+
+PUT accepts a complete replacement and its expected revision (zero to create):
+
+```json
+{
+  "expected_revision": 0,
+  "policy": {
+    "version": 1,
+    "mode": "restricted",
+    "rules": {
+      "kids_mode": true,
+      "max_rating": "PG",
+      "blocked_tags": ["horror"],
+      "allowed_tags": [],
+      "allow_unrated": false
+    }
+  }
+}
+```
+
+All illustrated fields are required; unknown/duplicate fields, null rule fields,
+trailing JSON, unsupported versions/ratings, and PIN/PIN-hash fields are rejected.
+Unrestricted mode requires `rules:null`. There is no DELETE; disabling a policy
+requires an explicit unrestricted replacement at its current revision.
+
+Tag arrays allow up to 64 entries of 128 bytes each. Entries are trimmed,
+lowercased, sorted and deduplicated; empty/control-containing tags are rejected.
+Future enforcement must match complete normalized tags: blocked tags win, and a
+nonempty allowed set requires a match without overriding rating/unrated rules.
+Kids mode supplies a PG ceiling when `max_rating` is empty. Supported ceilings
+are `G`, `TV-Y`, `TV-Y7`, `TV-Y7-FV`, `ALL`, `E`, `PG`, `TV-G`, `TV-PG`, `E10+`,
+`PG-13`, `TV-14`, `T`, `R`, `TV-MA`, `M`, `MA`, `NC-17`, `AO`, and `X`; case and
+surrounding whitespace normalize. Unknown/malformed media classifications remain
+unavailable to future consumers, distinct from genuinely unrated content.
+
+Responses use `Cache-Control: no-store`. Errors return a stable `code` and no
+submitted policy/credentials: 400 invalid input, 401 unauthenticated, 403
+forbidden, 404 unknown target account, 409 stale revision, 413 body over 32 KiB,
+405 unsupported method, or 503 auth/storage unavailable. Successful PUT returns
+the configured document with an incremented revision. Updates use SQLite
+compare-and-swap; callers must read/review current policy before retrying a 409.
+
+Policies persist in an additive `parental_policies` table keyed by
+`(tenant_id,user_id)`, independently of `user_blobs`. Database backups include
+the table. The older binary can still read ordinary userdata while leaving the
+new table intact; this is a storage rollback property, not a guarantee of media
+enforcement after consumer integration. No legacy policy is automatically
+migrated. Follow-up migration must read the protected admin-ui `parental.json`
+and use authenticated revision-checked writes. Profile/PIN grants and complete
+BFF media enforcement remain separate work.
 
 ---
 
@@ -116,6 +199,7 @@ curl -H "Authorization: Bearer $SESSION" \
 | Capability | Role |
 |------------|------|
 | `userdata.local` | Canonical household userdata store |
+| `userdata.parental-policy.v1` | Independent authoritative account policy resource (HTTP; currently unused by consumers) |
 | `settings` | Module settings surface (`db_path`) |
 
 ---
