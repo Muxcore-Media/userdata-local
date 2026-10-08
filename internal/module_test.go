@@ -10,6 +10,8 @@ import (
 )
 
 func TestModuleLifecycle(t *testing.T) {
+	t.Setenv("MUXCORE_PROFILE", "dev")
+	t.Setenv("MUXCORE_INSECURE_DISABLE_TLS", "true")
 	provider := auth.NewStaticProvider(map[string]contracts.Session{
 		"test-token": {UserID: "alice", Roles: []string{"user"}},
 	})

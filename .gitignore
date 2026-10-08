@@ -1,5 +1,6 @@
 # Binaries
 /userdata-local
+/userdata-health
 /module
 /cmd/module/module
 
