@@ -99,6 +99,10 @@ addition does **not** enforce parental restrictions on media. FR-PLAY-007 remain
 partial. Existing userdata preferences, including pass-through `prefs.parental`,
 remain untrusted client state and never initialize or overwrite this resource.
 
+The public `parental` package also hosts the shared, pure evaluator for these
+semantics (`parental.Evaluate`, `RatingLevel`; umbrella ADR-0031 Decision 2.6).
+It is unused until the BFF gate consumes it and performs no I/O.
+
 Both methods require `Authorization: Bearer <current-session>` and
 `X-MuxCore-User-Id: <target-account>`. Only this bearer is accepted: cookies,
 `x-auth-token`, module certificates and identity/tenant headers cannot substitute
