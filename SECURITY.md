@@ -26,6 +26,30 @@ Two caller models (same pattern as auth-local):
 
 Spoofed `X-MuxCore-User-Id` / `user_id` without a valid session are rejected.
 
+### Authoritative parental policy (`/api/parental-policy`)
+
+This separate, currently unused provider resource follows umbrella ADR-0030.
+Every GET/PUT requires a freshly validated `Authorization: Bearer` session.
+The legacy userdata mesh-certificate and `x-auth-token` paths do not authorize
+policy access. Only current admins may write; self reads and admin reads of
+other accounts are confined to the verified tenant. Other target accounts must
+exist in auth-local. Client tenant headers, query parameters and blob contents
+cannot establish policy scope. The empty tenant is a household scope, not a
+cross-tenant administrator grant. This is resource-local isolation, not full
+product multi-tenancy.
+
+Policies use their own SQLite table and atomic revision checks. Missing policy
+is explicitly unconfigured; corrupt storage/auth outages fail with errors.
+No policy, PIN or hash is copied from self-editable userdata. The strict new
+schema does not accept PIN material. Ordinary userdata retains its legacy
+pass-through behavior and may still contain old client PIN hashes. New policy
+responses are uncached and do not expose bearer tokens, PIN material or the
+stored administrator audit ID.
+
+This producer alone does not protect media routes. Trusted administrative
+migration, classification provenance, consumer route enforcement and profile/PIN
+grant design remain required before claiming FR-PLAY-007 complete.
+
 ## Transport
 
 - **gRPC listener** (`USERDATA_LOCAL_GRPC_ADDR`, default `:9703`): TLS enabled by default via `internal/grpctls` (auto-generated dev certs under `~/.muxcore/tls/userdata-local` or `MUXCORE_TLS_*` / `USERDATA_TLS_*`). Set `MUXCORE_INSECURE_DISABLE_TLS=true` for localhost plaintext dev only.

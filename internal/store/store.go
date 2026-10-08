@@ -44,7 +44,7 @@ func (s *Store) migrate() error {
 	if err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	}
-	return nil
+	return s.migrateParentalPolicies()
 }
 
 // Close closes the database handle.
