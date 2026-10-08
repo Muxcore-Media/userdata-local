@@ -1,6 +1,8 @@
-// Package parental defines the authoritative account policy contract (ADR-0030).
-// It does not evaluate media or grant playback access. In particular, missing
-// policy and unavailable classification must never mean unrestricted access.
+// Package parental defines the authoritative account policy contract (ADR-0030)
+// and the single shared evaluator for it (ADR-0031). The evaluator is a pure
+// function over a policy and a caller-supplied classification; it performs no
+// lookups and grants no access by itself. In particular, missing policy and
+// unavailable classification must never mean unrestricted access.
 package parental
 
 import (
@@ -114,13 +116,19 @@ func Normalize(p Policy) (Policy, error) {
 	return p, nil
 }
 
+// normalizeTag is the one tag comparison form shared by policy rules and by
+// item classifications, so both sides of an exact match are folded identically.
+func normalizeTag(tag string) string {
+	return strings.ToLower(strings.TrimSpace(tag))
+}
+
 func normalizeTags(tags []string) ([]string, error) {
 	if len(tags) > 64 {
 		return nil, errors.New("too many policy tags")
 	}
 	result := make([]string, 0, len(tags))
 	for _, tag := range tags {
-		tag = strings.ToLower(strings.TrimSpace(tag))
+		tag = normalizeTag(tag)
 		if tag == "" || len(tag) > 128 || strings.ContainsFunc(tag, unicode.IsControl) {
 			return nil, errors.New("invalid policy tag")
 		}

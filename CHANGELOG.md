@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- `parental.Evaluate` / `RatingLevel`: shared pure parental-policy evaluator (ADR-0031 S1). Not yet consumed by any module.
+
 ## [0.1.4] - 2026-10-05
 
 
