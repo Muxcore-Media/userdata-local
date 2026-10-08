@@ -1,8 +1,9 @@
 # Changelog
 
-## [Unreleased]
+## [0.1.5] - 2026-10-08
 
 ### Added
+- Authoritative parental policy resource `GET`/`PUT /api/parental-policy` (capability `userdata.parental-policy.v1`, ADR-0030): bearer-authenticated, revision-checked, stored apart from user blobs. Not yet consumed by the BFF or admin-ui.
 - `parental.Evaluate` / `RatingLevel`: shared pure parental-policy evaluator (ADR-0031 S1). Not yet consumed by any module.
 
 ## [0.1.4] - 2026-10-05
