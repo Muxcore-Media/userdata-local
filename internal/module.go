@@ -2,6 +2,7 @@ package internal
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"log/slog"
 	"net"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -18,6 +20,7 @@ import (
 	manifest "github.com/Muxcore-Media/userdata-local"
 	"github.com/Muxcore-Media/userdata-local/internal/auth"
 	"github.com/Muxcore-Media/userdata-local/internal/grpctls"
+	"github.com/Muxcore-Media/userdata-local/internal/httptransport"
 	"github.com/Muxcore-Media/userdata-local/internal/server"
 	"github.com/Muxcore-Media/userdata-local/internal/store"
 	"github.com/Muxcore-Media/userdata-local/parental"
@@ -38,6 +41,8 @@ type Module struct {
 	httpSrv      *http.Server
 	grpcLis      net.Listener
 	httpLis      net.Listener
+	grpcTLS      *tls.Config
+	httpTLS      *tls.Config
 	cfgMu        sync.RWMutex
 	id           string
 	grpcAddr     string
@@ -107,13 +112,31 @@ func (m *Module) Info() contracts.ModuleInfo {
 	}
 }
 
-func (m *Module) Init(ctx context.Context) error {
+func (m *Module) Init(ctx context.Context) (initErr error) {
+	// Validate both transports before opening either socket. HTTP never uses
+	// gRPC's optional-client-cert or generated-CA behavior.
+	httpCfg, err := httptransport.FromEnv(moduleID)
+	if err != nil {
+		return err
+	}
+	m.httpTLS, err = httptransport.ServerConfig(httpCfg)
+	if err != nil {
+		return err
+	}
+	m.grpcTLS, err = grpctls.ServerConfig(m.dbPath)
+	if err != nil {
+		return fmt.Errorf("gRPC TLS: %w", err)
+	}
+	defer func() {
+		if initErr != nil {
+			_ = m.Stop(ctx)
+		}
+	}()
 	if dir := filepath.Dir(m.dbPath); dir != "" && dir != "." {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return fmt.Errorf("create db dir: %w", err)
 		}
 	}
-	var err error
 	m.store, err = store.New(m.dbPath)
 	if err != nil {
 		return fmt.Errorf("init store: %w", err)
@@ -145,13 +168,12 @@ func (m *Module) Init(ctx context.Context) error {
 }
 
 func (m *Module) Start(ctx context.Context) error {
-	var grpcOpts []grpc.ServerOption
-	tlsCfg, err := grpctls.ServerConfig(m.dbPath)
-	if err != nil {
-		return fmt.Errorf("gRPC TLS: %w", err)
+	if m.grpcLis == nil || m.httpLis == nil || m.srv == nil {
+		return fmt.Errorf("userdata-local: initialize before starting")
 	}
-	if tlsCfg != nil {
-		grpcOpts = append(grpcOpts, grpc.Creds(credentials.NewTLS(tlsCfg)))
+	var grpcOpts []grpc.ServerOption
+	if m.grpcTLS != nil {
+		grpcOpts = append(grpcOpts, grpc.Creds(credentials.NewTLS(m.grpcTLS)))
 		slog.Info("userdata-local gRPC TLS enabled", "addr", m.grpcAddr)
 	} else {
 		slog.Warn("userdata-local gRPC listening without TLS (dev only)",
@@ -162,19 +184,28 @@ func (m *Module) Start(ctx context.Context) error {
 	m.grpcSrv = grpc.NewServer(grpcOpts...)
 	m.srv.RegisterWithGRPC(m.grpcSrv)
 	modulesdk.RegisterSettings(m.grpcSrv, m.id, m)
+	grpcSrv, grpcLis := m.grpcSrv, m.grpcLis
 	go func() {
 		slog.Info("userdata-local gRPC started", "addr", m.grpcAddr)
-		if err := m.grpcSrv.Serve(m.grpcLis); err != nil {
+		if err := grpcSrv.Serve(grpcLis); err != nil {
 			slog.Error("userdata-local gRPC error", "error", err)
 		}
 	}()
 
 	mux := http.NewServeMux()
 	m.srv.RegisterRoutes(mux)
-	m.httpSrv = &http.Server{Handler: mux}
+	var handler http.Handler = mux
+	if m.httpTLS != nil {
+		handler = httptransport.Admit(mux)
+		m.httpLis = tls.NewListener(m.httpLis, m.httpTLS)
+	}
+	m.httpSrv = &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second,
+		MaxHeaderBytes: 32 << 10}
+	httpSrv, httpLis := m.httpSrv, m.httpLis
 	go func() {
 		slog.Info("userdata-local HTTP started", "addr", m.httpAddr)
-		if err := m.httpSrv.Serve(m.httpLis); err != nil && err != http.ErrServerClosed {
+		if err := httpSrv.Serve(httpLis); err != nil && err != http.ErrServerClosed {
 			slog.Error("userdata-local HTTP error", "error", err)
 		}
 	}()
@@ -188,11 +219,21 @@ func (m *Module) Stop(ctx context.Context) error {
 	if m.httpSrv != nil {
 		_ = m.httpSrv.Shutdown(ctx)
 	}
+	// Listeners also exist between Init and Start, including partial Init failure.
+	if m.grpcLis != nil {
+		_ = m.grpcLis.Close()
+		m.grpcLis = nil
+	}
+	if m.httpLis != nil {
+		_ = m.httpLis.Close()
+		m.httpLis = nil
+	}
 	if m.authConn != nil {
 		_ = m.authConn.Close()
 	}
 	if m.store != nil {
 		_ = m.store.Close()
+		m.store = nil
 	}
 	slog.Info("userdata-local stopped")
 	return nil

@@ -1,5 +1,22 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- ADR-0033/S9a HTTP transport: strict core-CA mTLS, fixed provider SAN/CN and
+  verified caller-CN method/path admission before existing user authorization.
+- Public `httpclient` package with fixed operations, caller identity validation,
+  origin binding, no proxy/redirect behavior, bounded requests and typed provider
+  unavailability distinct from application authorization failures.
+- Standalone `userdata-health` probe in host/image packaging, resolving only
+  existing configured or mounted identity files without enrollment or storage.
+
+### Changed
+- Household HTTP intentionally rejects legacy plaintext clients; compatible
+  consumers and authenticated probes must deploy together. Explicit insecure dev
+  remains available with profile validation and warnings. No DB schema or gRPC
+  principal model change; no full S9/deployment acceptance is implied.
+
 ## [0.1.5] - 2026-10-08
 
 ### Added

@@ -7,6 +7,7 @@ BINARY ?= userdata-local
 
 build:
 	$(GO) build -ldflags="$(LDFLAGS)" -o $(BINARY) ./cmd/module
+	$(GO) build -ldflags="$(LDFLAGS)" -o userdata-health ./cmd/userdata-health
 
 test:
 	$(GO) test -race -count=1 -timeout 60s ./...
@@ -16,6 +17,7 @@ lint:
 
 clean:
 	rm -f $(BINARY)
+	rm -f userdata-health
 	rm -f cmd/module/module
 	rm -rf dist/
 
@@ -31,7 +33,7 @@ proto:
 		proto/muxcore/userdata/v1/userdata.proto
 
 docker:
-	docker build -f Dockerfile -t ghcr.io/muxcore-media/$(BINARY):$(VERSION) ..
+	docker build -f Dockerfile -t ghcr.io/muxcore-media/$(BINARY):$(VERSION) .
 	docker tag ghcr.io/muxcore-media/$(BINARY):$(VERSION) ghcr.io/muxcore-media/$(BINARY):latest
 
 ci: lint test build

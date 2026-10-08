@@ -11,7 +11,7 @@ Tracked by https://github.com/Muxcore-Media/umbrella/issues/19 · Security: http
 ## How it works
 
 ```
-media-ui / native clients ──HTTP (Bearer + user header)──► userdata-local (:9701) ──► SQLite
+media-ui / admin-ui ──HTTPS (mTLS + Bearer + user header)──► userdata-local (:9701) ──► SQLite
 core / BFF ──────────────── gRPC (mTLS or session) ─────► userdata-local (:9703) ──► SQLite
                                       │
                                       └── validates sessions via auth-local (:9403)
@@ -33,8 +33,11 @@ Each household user has one JSON blob (`progress`, `favorites`, `prefs`, `playli
 | `MUXCORE_GRPC_ADDR` | — | Core mesh address |
 | `MUXCORE_MODULE_ID` | `userdata-local` | Module ID override |
 | `MUXCORE_TLS_CERT` / `MUXCORE_TLS_KEY` / `MUXCORE_TLS_CA` | — | Mesh mTLS material (production) |
+| `MUXCORE_TLS_DIR` | — | Existing module identity directory (`module.crt`, `module.key`, `ca.crt`) for separately invoked helpers |
+| `MUXCORE_CA_EXPORT_DIR` | — | Mounted core CA directory (`ca.crt`), when `MUXCORE_TLS_CA` is unset |
+| `MUXCORE_PROFILE` | `household` unless an insecure flag infers legacy dev | `dev`, `household`, or `staging` (household alias); unknown values fail |
 | `USERDATA_TLS_CERT` / `USERDATA_TLS_KEY` / `USERDATA_TLS_CA` | — | gRPC listener TLS overrides |
-| `MUXCORE_INSECURE_DISABLE_TLS` | — | Dev-only plaintext gRPC (`true`) |
+| `MUXCORE_INSECURE_DISABLE_TLS` | — | Explicit dev-only plaintext (`true` or `1`); HTTP also checks legacy `MUXCORE_GRPC_INSECURE` and `MUXCORE_DEV_TLS_SKIP` aliases |
 
 ---
 
@@ -42,12 +45,88 @@ Each household user has one JSON blob (`progress`, `favorites`, `prefs`, `playli
 
 ### HTTP
 
-Clients must send **both**:
+Household/staging HTTP is TLS-only with a core-CA-verified client certificate.
+Both the listener and client independently enforce the profile. Missing, partial,
+malformed, expired or wrong-identity material fails configuration; neither side
+generates an HTTP CA, uses system roots or falls back to plaintext. TLS 1.2 is the
+minimum. The provider certificate must have CN and service SAN `userdata-local`.
+Every client verifies that fixed SAN and exact CN even when dialing loopback;
+`MUXCORE_TLS_SERVER_NAME` does not override the provider identity.
+The provider's HTTP certificate identity stays `userdata-local` even if the
+historical SDK `MUXCORE_MODULE_ID` override names a different registration ID.
+
+Admission uses only the verified client certificate CN, before any HTTP handler,
+user lookup or storage access:
+
+| Module CN | `/api/parental-policy` | `/api/userdata` | `/health` |
+|-----------|------------------------|-----------------|-----------|
+| `media-ui` | GET | GET, PUT | GET, HEAD |
+| `admin-ui` | GET, PUT | GET, PUT | GET, HEAD |
+| `userdata-local`, `health-monitor` | denied | denied | GET, HEAD |
+| All others (including `jellyfin`, `muxcore`) | denied | denied | denied |
+
+Untrusted/missing certificates fail the handshake. Admission denials return
+no-store 403 with exactly `{"code":"userdata.module_forbidden"}` and
+`X-MuxCore-Error-Code: userdata.module_forbidden`. HEAD has no body; that generic
+header preserves its discriminator. Unknown paths/methods are denied before mux
+redirects. Module identity never comes from HTTP headers or the user bearer.
+
+Admitted data requests must still send **both**:
 
 1. `Authorization: Bearer <session-token>` — validated via auth-local
 2. `X-MuxCore-User-Id: <household-user-id>` — must match the validated session (unless caller has `admin` role)
 
 Requests with a spoofed user id or missing/invalid bearer token receive `401` / `403`.
+Certificate identity never substitutes for user authority. A `media-ui` caller
+cannot PUT policy even with an admin bearer; `admin-ui` still needs a fresh admin
+bearer and the verified tenant/target checks. Browsers/native devices access a
+user-facing gateway; do not give them mesh private keys. Optional Jellyfin
+background userdata sync has no admitted HTTP operation in this release.
+
+Explicit insecure dev retains plaintext and user authorization, logs a warning,
+and has no authenticated module transport. Dev without an insecure flag still
+requires TLS. Household/staging reject all three insecure aliases, including `1`.
+With neither a profile nor an insecure flag, the HTTP boundary infers secure
+household operation and fails if identity material is absent.
+
+### Checked provider client
+
+The public `github.com/Muxcore-Media/userdata-local/httpclient` package owns
+provider transport. Construct it after the calling daemon has enrolled, or resolve
+existing mounted identity files with `FromEnv` in a separate helper. Pass the
+calling service's fixed module ID; a certificate with a different CN is rejected.
+
+```go
+cfg, err := httpclient.FromEnv("https://userdata-local:9672", "media-ui")
+// Handle configuration errors; never retry using plaintext.
+client, err := httpclient.New(cfg)
+// Reuse client, and call CloseIdleConnections on shutdown/reconfiguration.
+headers := http.Header{
+    "Authorization": {"Bearer " + currentSessionBearer},
+    "X-Muxcore-User-Id": {verifiedTargetUser},
+}
+response, err := client.Do(ctx, httpclient.GetPolicy, headers, nil)
+```
+
+`Do` supports only `GetPolicy`, `PutPolicy`, `GetUserdata`, `PutUserdata`,
+`GetHealth` and `HeadHealth`; each operation fixes the method and path. Callers
+derive the one bearer/target from their current server session; the package copies
+headers and never creates authorization. The configured origin has no path,
+credentials, query or fragment. HTTPS is mandatory in secure mode; explicit
+insecure dev uses HTTP. Unspecified bind addresses are not valid origins.
+The dedicated transport refuses different origins before dialing, ignores proxy
+environment variables and refuses every redirect, including same-origin ones.
+
+Requests and response reads default to 5 seconds (configurable up to 30 seconds),
+honor earlier cancellation and bound response bodies to 8 MiB and headers to
+32 KiB. Callers close returned response bodies. Application statuses remain intact,
+including policy `401`, `403 policy.forbidden`, `409` and `503`. Transport or
+admission failures satisfy `errors.Is(err, httpclient.ErrUnavailable)`; use
+`errors.As` for `*httpclient.UnavailableError` and its `Reason`. Only
+`ReasonModuleForbidden` proves the write was not applied. Connection loss/timeouts
+leave write outcome uncertain. Do not revoke a user's session for module denial,
+interpret a failed policy fetch as unrestricted, or blindly retry an uncertain
+write with a new revision.
 
 ### gRPC
 
@@ -78,7 +157,7 @@ Proto: `proto/muxcore/userdata/v1/userdata.proto`
 | `PUT` | `/api/userdata` | Merge request JSON blob; return merged blob |
 | `GET` | `/api/parental-policy` | Read authoritative policy for self or a same-tenant account as admin |
 | `PUT` | `/api/parental-policy` | Admin-only, revision-checked policy replacement |
-| `GET` | `/health` | Unauthenticated health check |
+| `GET`, `HEAD` | `/health` | Admitted mesh health check; no user bearer, empty HEAD body |
 
 ### Blob sections (in scope)
 
@@ -188,13 +267,38 @@ make build
 
 Dev core: `MUXCORE_INSECURE_DISABLE_TLS=true ./muxcored` in `../core`.
 
-Example authenticated HTTP request:
+Example authenticated HTTP request for **explicit insecure dev only**:
 
 ```bash
 curl -H "Authorization: Bearer $SESSION" \
      -H "X-MuxCore-User-Id: alice" \
      http://localhost:9701/api/userdata
 ```
+
+`make build` also produces `./userdata-health`; the Docker image ships it at
+`/app/userdata-health`. Run it inside userdata-local's own service context:
+
+```bash
+./userdata-health
+# Or explicitly set the origin (for example the household compose port):
+./userdata-health --origin https://127.0.0.1:9672
+```
+
+The default probe uses `USERDATA_LOCAL_HTTP_ADDR` (default `:9701`), translating a
+local wildcard bind to loopback. It validates the same provider identity, calls
+GET `/health` without a user bearer, and exits nonzero on failure. It never starts
+the daemon, opens its database, enrolls, consumes a bootstrap token or creates
+certificates. Since daemon-exported environment values are not inherited by a
+separate process, configure explicit cert/key/CA paths or `MUXCORE_TLS_DIR` plus
+the mounted CA. CA lookup is explicit `MUXCORE_TLS_CA`, then
+`MUXCORE_CA_EXPORT_DIR/ca.crt`, then `MUXCORE_TLS_DIR/ca.crt`. Partial explicit
+cert/key paths fail instead of falling back to the directory.
+
+Deploy the listener together with compatible BFF/admin clients and authenticated
+probes. Old household plaintext callers deliberately fail. No parallel plaintext
+listener or automatic authority migration is provided. Provider tests alone do
+not establish BFF cache propagation, native-client routing, household enforcement
+or deployment acceptance (umbrella ADR-0033/S9).
 
 ---
 
