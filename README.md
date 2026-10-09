@@ -31,13 +31,14 @@ Each household user has one JSON blob (`progress`, `favorites`, `prefs`, `playli
 | `USERDATA_LOCAL_DB_PATH` | `<data dir>/userdata.db` | SQLite database file (overrides the data-dir default) |
 | `AUTH_LOCAL_GRPC_ADDR` | `localhost:9403` | auth-local gRPC address for session validation |
 | `MUXCORE_GRPC_ADDR` | — | Core mesh address |
-| `MUXCORE_MODULE_ID` | `userdata-local` | Module ID override |
+| `MUXCORE_MODULE_ID` | `userdata-local` | Module ID override. **Unsupported for the secure HTTP transport**: the SDK would enroll a certificate with that CN, but the HTTP identity is bound to `userdata-local`, so startup (and `userdata-health`) fails with a clear error. Ignored in explicit insecure dev |
 | `MUXCORE_TLS_CERT` / `MUXCORE_TLS_KEY` / `MUXCORE_TLS_CA` | — | Mesh mTLS material (production) |
-| `MUXCORE_TLS_DIR` | — | Existing module identity directory (`module.crt`, `module.key`, `ca.crt`) for separately invoked helpers |
-| `MUXCORE_CA_EXPORT_DIR` | — | Mounted core CA directory (`ca.crt`), when `MUXCORE_TLS_CA` is unset |
+| `MUXCORE_TLS_DIR` | `$MUXCORE_DATA_DIR/mesh-id` | Existing module identity directory (`module.crt`, `module.key`, `ca.crt`), as resolved by the SDK; used by separately invoked helpers such as `userdata-health` |
+| `MUXCORE_DATA_DIR` | `./data` (relative to the working directory) | Core/SDK data dir; the default identity directory is `<data dir>/mesh-id` |
+| `MUXCORE_CA_EXPORT_DIR` | — | Mounted core CA directory; its `ca.crt` is used when `MUXCORE_TLS_CA` is unset and the file exists |
 | `MUXCORE_PROFILE` | `household` unless an insecure flag infers legacy dev | `dev`, `household`, or `staging` (household alias); unknown values fail |
 | `USERDATA_TLS_CERT` / `USERDATA_TLS_KEY` / `USERDATA_TLS_CA` | — | gRPC listener TLS overrides |
-| `MUXCORE_INSECURE_DISABLE_TLS` | — | Explicit dev-only plaintext (`true` or `1`); HTTP also checks legacy `MUXCORE_GRPC_INSECURE` and `MUXCORE_DEV_TLS_SKIP` aliases |
+| `MUXCORE_INSECURE_DISABLE_TLS` | — | Explicit dev-only plaintext. The HTTP listener and clients read it exactly like core and the SDK: this variable or the deprecated `MUXCORE_DEV_TLS_SKIP`, equal to exactly `true` or `1` (after trimming space). Any other spelling (`TRUE`, `yes`, a typo) and `MUXCORE_GRPC_INSECURE` are **not** insecure flags for HTTP, which stays on mTLS. The gRPC listener's own legacy handling of `MUXCORE_GRPC_INSECURE` is unchanged |
 
 ---
 
@@ -52,8 +53,10 @@ generates an HTTP CA, uses system roots or falls back to plaintext. TLS 1.2 is t
 minimum. The provider certificate must have CN and service SAN `userdata-local`.
 Every client verifies that fixed SAN and exact CN even when dialing loopback;
 `MUXCORE_TLS_SERVER_NAME` does not override the provider identity.
-The provider's HTTP certificate identity stays `userdata-local` even if the
-historical SDK `MUXCORE_MODULE_ID` override names a different registration ID.
+The provider's HTTP certificate identity must be `userdata-local`. A different
+`MUXCORE_MODULE_ID` override is unsupported: the SDK enrolls a certificate whose
+CN is the override, which could never be the provider identity, so secure startup
+and `FromEnv` fail up front with a message naming the variable.
 
 Admission uses only the verified client certificate CN, before any HTTP handler,
 user lookup or storage access:
@@ -85,9 +88,15 @@ background userdata sync has no admitted HTTP operation in this release.
 
 Explicit insecure dev retains plaintext and user authorization, logs a warning,
 and has no authenticated module transport. Dev without an insecure flag still
-requires TLS. Household/staging reject all three insecure aliases, including `1`.
+requires TLS. Household/staging reject both honoured insecure flags, including `1`.
 With neither a profile nor an insecure flag, the HTTP boundary infers secure
-household operation and fails if identity material is absent.
+household operation and fails if identity material is absent. Insecure-flag
+detection and unset-profile inference follow core and the SDK exactly (ADR-0016):
+only `MUXCORE_INSECURE_DISABLE_TLS` / `MUXCORE_DEV_TLS_SKIP` set to exactly `true`
+or `1` select plaintext, so e.g. `MUXCORE_GRPC_INSECURE=1` or
+`MUXCORE_INSECURE_DISABLE_TLS=TRUE` with the profile unset leaves core in
+household, the SDK enrolling over mTLS, and the HTTP listener on mTLS with module
+admission rather than plaintext.
 
 ### Checked provider client
 
@@ -119,7 +128,9 @@ environment variables and refuses every redirect, including same-origin ones.
 
 Requests and response reads default to 5 seconds (configurable up to 30 seconds),
 honor earlier cancellation and bound response bodies to 8 MiB and headers to
-32 KiB. Callers close returned response bodies. Application statuses remain intact,
+32 KiB. The response must be read completely within the deadline: a response
+that only completes after the deadline fired is reported as
+`ReasonTransport` (wrapping `context.DeadlineExceeded`), never as a success. Callers close returned response bodies. Application statuses remain intact,
 including policy `401`, `403 policy.forbidden`, `409` and `503`. Transport or
 admission failures satisfy `errors.Is(err, httpclient.ErrUnavailable)`; use
 `errors.As` for `*httpclient.UnavailableError` and its `Reason`. Only
@@ -154,7 +165,7 @@ Proto: `proto/muxcore/userdata/v1/userdata.proto`
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/api/userdata` | Return merged blob for authenticated user |
-| `PUT` | `/api/userdata` | Merge request JSON blob; return merged blob |
+| `PUT` | `/api/userdata` | Merge request JSON blob (request body up to 4 MiB); return merged blob. A merge whose JSON would exceed 8 MiB (the client's response cap) is refused with `413` and nothing is stored (gRPC `Put`: `ResourceExhausted`) |
 | `GET` | `/api/parental-policy` | Read authoritative policy for self or a same-tenant account as admin |
 | `PUT` | `/api/parental-policy` | Admin-only, revision-checked policy replacement |
 | `GET`, `HEAD` | `/health` | Admitted mesh health check; no user bearer, empty HEAD body |
@@ -289,10 +300,16 @@ local wildcard bind to loopback. It validates the same provider identity, calls
 GET `/health` without a user bearer, and exits nonzero on failure. It never starts
 the daemon, opens its database, enrolls, consumes a bootstrap token or creates
 certificates. Since daemon-exported environment values are not inherited by a
-separate process, configure explicit cert/key/CA paths or `MUXCORE_TLS_DIR` plus
-the mounted CA. CA lookup is explicit `MUXCORE_TLS_CA`, then
-`MUXCORE_CA_EXPORT_DIR/ca.crt`, then `MUXCORE_TLS_DIR/ca.crt`. Partial explicit
-cert/key paths fail instead of falling back to the directory.
+separate process, the probe repeats the SDK's (`meshid.Ensure`) lookup of existing
+files only: explicit `MUXCORE_TLS_CERT` + `MUXCORE_TLS_KEY`, else `module.crt` and
+`module.key` in `MUXCORE_TLS_DIR`, else in `$MUXCORE_DATA_DIR/mesh-id` (data dir
+default `./data`, relative to the probe's working directory, so set
+`MUXCORE_DATA_DIR` or `MUXCORE_TLS_DIR` when the probe does not run in the
+daemon's working directory). CA lookup is explicit `MUXCORE_TLS_CA`, then
+`MUXCORE_CA_EXPORT_DIR/ca.crt` when that file exists, then `ca.crt` in the
+identity directory. One deliberate difference: only one of the explicit
+cert/key paths fails instead of silently falling back to the directory.
+`MUXCORE_MODULE_ID` must be unset or `userdata-local`.
 
 Deploy the listener together with compatible BFF/admin clients and authenticated
 probes. Old household plaintext callers deliberately fail. No parallel plaintext
