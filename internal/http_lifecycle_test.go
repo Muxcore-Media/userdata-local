@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"github.com/Muxcore-Media/core/pkg/contracts"
+	"github.com/Muxcore-Media/core/sdk/go/module/erasure"
+	"github.com/Muxcore-Media/core/sdk/go/module/erasure/erasuretest"
 	"github.com/Muxcore-Media/userdata-local/httpclient"
 	"github.com/Muxcore-Media/userdata-local/internal/auth"
 	"github.com/Muxcore-Media/userdata-local/internal/testtls"
@@ -81,7 +83,7 @@ func TestHouseholdHTTPModuleBearerRevisionAndPersistence(t *testing.T) {
 	transportEnv(t, ca, provider)
 	identity := freshTransportAuth()
 	db := filepath.Join(t.TempDir(), "userdata.db")
-	m := NewModule(Config{GRPCAddr: "127.0.0.1:0", HTTPAddr: "127.0.0.1:0", DBPath: db, AuthProvider: identity})
+	m := NewModule(Config{GRPCAddr: "127.0.0.1:0", HTTPAddr: "127.0.0.1:0", DBPath: db, AuthProvider: identity, ErasureDialer: noProviderDialer()})
 	ctx := context.Background()
 	if err := m.Init(ctx); err != nil {
 		t.Fatal(err)
@@ -207,7 +209,7 @@ func TestHouseholdHTTPModuleBearerRevisionAndPersistence(t *testing.T) {
 	if err := m.Stop(ctx); err != nil {
 		t.Fatal(err)
 	}
-	m = NewModule(Config{GRPCAddr: "127.0.0.1:0", HTTPAddr: "127.0.0.1:0", DBPath: db, AuthProvider: identity})
+	m = NewModule(Config{GRPCAddr: "127.0.0.1:0", HTTPAddr: "127.0.0.1:0", DBPath: db, AuthProvider: identity, ErasureDialer: noProviderDialer()})
 	if err := m.Init(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -259,7 +261,7 @@ func TestTransportStartupValidationAndCleanup(t *testing.T) {
 			test.change(t)
 			grpcAddr, httpAddr := freeAddress(t), freeAddress(t)
 			db := filepath.Join(t.TempDir(), "userdata.db")
-			m := NewModule(Config{GRPCAddr: grpcAddr, HTTPAddr: httpAddr, DBPath: db, AuthProvider: freshTransportAuth()})
+			m := NewModule(Config{GRPCAddr: grpcAddr, HTTPAddr: httpAddr, DBPath: db, AuthProvider: freshTransportAuth(), ErasureDialer: noProviderDialer()})
 			if err := m.Init(context.Background()); err == nil {
 				_ = m.Stop(context.Background())
 				t.Fatal("invalid config initialized")
@@ -278,7 +280,7 @@ func TestTransportStartupValidationAndCleanup(t *testing.T) {
 		}
 		defer busy.Close()
 		grpcAddr := freeAddress(t)
-		m := NewModule(Config{GRPCAddr: grpcAddr, HTTPAddr: busy.Addr().String(), DBPath: filepath.Join(t.TempDir(), "userdata.db"), AuthProvider: freshTransportAuth()})
+		m := NewModule(Config{GRPCAddr: grpcAddr, HTTPAddr: busy.Addr().String(), DBPath: filepath.Join(t.TempDir(), "userdata.db"), AuthProvider: freshTransportAuth(), ErasureDialer: noProviderDialer()})
 		if err := m.Init(context.Background()); err == nil {
 			t.Fatal("busy listener initialized")
 		}
@@ -289,7 +291,7 @@ func TestTransportStartupValidationAndCleanup(t *testing.T) {
 	})
 	t.Run("immediate start stop", func(t *testing.T) {
 		for i := range 10 {
-			m := NewModule(Config{GRPCAddr: "127.0.0.1:0", HTTPAddr: "127.0.0.1:0", DBPath: filepath.Join(t.TempDir(), fmt.Sprint(i)+".db"), AuthProvider: freshTransportAuth()})
+			m := NewModule(Config{GRPCAddr: "127.0.0.1:0", HTTPAddr: "127.0.0.1:0", DBPath: filepath.Join(t.TempDir(), fmt.Sprint(i)+".db"), AuthProvider: freshTransportAuth(), ErasureDialer: noProviderDialer()})
 			if err := m.Init(context.Background()); err != nil {
 				t.Fatal(err)
 			}
@@ -319,7 +321,7 @@ func TestNonCoreInsecureSpellingsNeverServePlaintextHTTP(t *testing.T) {
 			transportEnv(t, ca, ca.Issue(t, "userdata-local"))
 			t.Setenv("MUXCORE_PROFILE", "")
 			t.Setenv(test.name, test.value)
-			m := NewModule(Config{GRPCAddr: "127.0.0.1:0", HTTPAddr: "127.0.0.1:0", DBPath: filepath.Join(t.TempDir(), "userdata.db"), AuthProvider: freshTransportAuth()})
+			m := NewModule(Config{GRPCAddr: "127.0.0.1:0", HTTPAddr: "127.0.0.1:0", DBPath: filepath.Join(t.TempDir(), "userdata.db"), AuthProvider: freshTransportAuth(), ErasureDialer: noProviderDialer()})
 			ctx := context.Background()
 			if err := m.Init(ctx); err != nil {
 				t.Fatal(err)
@@ -367,7 +369,7 @@ func TestNonCoreInsecureSpellingsNeverServePlaintextHTTP(t *testing.T) {
 func TestMergedBlobBoundaryIsReadableThroughClient(t *testing.T) {
 	ca := testtls.NewCA(t)
 	transportEnv(t, ca, ca.Issue(t, "userdata-local"))
-	m := NewModule(Config{GRPCAddr: "127.0.0.1:0", HTTPAddr: "127.0.0.1:0", DBPath: filepath.Join(t.TempDir(), "userdata.db"), AuthProvider: freshTransportAuth()})
+	m := NewModule(Config{GRPCAddr: "127.0.0.1:0", HTTPAddr: "127.0.0.1:0", DBPath: filepath.Join(t.TempDir(), "userdata.db"), AuthProvider: freshTransportAuth(), ErasureDialer: noProviderDialer()})
 	ctx := context.Background()
 	if err := m.Init(ctx); err != nil {
 		t.Fatal(err)
@@ -427,7 +429,7 @@ func TestExplicitDevHTTPRetainsUserAuthorization(t *testing.T) {
 	t.Setenv("MUXCORE_TLS_CERT", "")
 	t.Setenv("MUXCORE_TLS_KEY", "")
 	t.Setenv("MUXCORE_TLS_CA", "")
-	m := NewModule(Config{GRPCAddr: "127.0.0.1:0", HTTPAddr: "127.0.0.1:0", DBPath: filepath.Join(t.TempDir(), "userdata.db"), AuthProvider: freshTransportAuth()})
+	m := NewModule(Config{GRPCAddr: "127.0.0.1:0", HTTPAddr: "127.0.0.1:0", DBPath: filepath.Join(t.TempDir(), "userdata.db"), AuthProvider: freshTransportAuth(), ErasureDialer: noProviderDialer()})
 	ctx := context.Background()
 	if err := m.Init(ctx); err != nil {
 		t.Fatal(err)
@@ -459,4 +461,11 @@ func TestExplicitDevHTTPRetainsUserAuthorization(t *testing.T) {
 			}
 		}
 	}
+}
+
+// noProviderDialer satisfies the household requirement for the ADR-0035
+// reconciler in transport tests that have no identity provider to discover:
+// every sweep fails closed with "no identity provider" and erases nothing.
+func noProviderDialer() *erasure.ProviderDialer {
+	return &erasure.ProviderDialer{Discovery: erasuretest.NewDiscovery()}
 }

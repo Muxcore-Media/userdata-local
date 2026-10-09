@@ -3,9 +3,9 @@ module github.com/Muxcore-Media/userdata-local
 go 1.26.6
 
 require (
-	github.com/Muxcore-Media/core v0.6.14
+	github.com/Muxcore-Media/core v0.6.17
 	github.com/Muxcore-Media/core/pkg/contracts v0.6.0
-	github.com/Muxcore-Media/core/sdk/go/module v0.6.4
+	github.com/Muxcore-Media/core/sdk/go/module v0.6.7
 	google.golang.org/grpc v1.83.2
 	google.golang.org/protobuf v1.36.11
 	modernc.org/sqlite v1.55.0

@@ -1,16 +1,18 @@
 package store
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 
 	"github.com/Muxcore-Media/core/sdk/go/module/moduletest"
+	"github.com/Muxcore-Media/userdata-local/parental"
 )
 
 // TestUpgradeFromSnapshots opens databases written by earlier tags with the
 // current code (ADR-0015, NFR-DATA-002, FR-INS-005).
 func TestUpgradeFromSnapshots(t *testing.T) {
-	for _, tag := range []string{"v0.1.0"} {
+	for _, tag := range []string{"v0.1.0", "v0.1.6"} {
 		t.Run(tag, func(t *testing.T) {
 			path := moduletest.CopyFixture(t, filepath.Join("testdata", "upgrade", tag+".db"))
 
@@ -87,6 +89,47 @@ func TestUpgradeFromSnapshots(t *testing.T) {
 			// Writes still work on the upgraded DB.
 			if _, rev, err := st.MarkWatched("bob", "movie-1", true); err != nil || rev != 2 {
 				t.Errorf("MarkWatched after upgrade: rev=%d err=%v", rev, err)
+			}
+
+			// v0.1.5+ snapshots carry parental_policies rows (ADR-0030).
+			hasPolicies := tag != "v0.1.0"
+			if hasPolicies {
+				doc, err := st.GetParentalPolicy(context.Background(), parental.Scope{TenantID: "home", UserID: "kid"})
+				if err != nil || doc.State != "configured" || doc.Revision != 1 {
+					t.Errorf("kid policy after upgrade: %+v %v", doc, err)
+				}
+			}
+
+			// ADR-0035: the erasure_applied table is created by the forward
+			// migration and the erasure works on the upgraded database.
+			if ok, err := st.ErasureApplied(context.Background(), "er-upgrade"); err != nil || ok {
+				t.Fatalf("erasure_applied after upgrade: %v %v", ok, err)
+			}
+			counts, err := st.EraseUser(context.Background(), "er-upgrade", "alice@example.com", "home")
+			if err != nil {
+				t.Fatalf("EraseUser after upgrade: %v", err)
+			}
+			wantPolicies, wantAnon := int64(0), int64(0)
+			if hasPolicies {
+				wantPolicies, wantAnon = 1, 1
+			}
+			if counts[CountUserBlobs] != 1 || counts[CountParentalPolicies] != wantPolicies || counts[CountParentalPoliciesAnonymise] != wantAnon {
+				t.Errorf("erase counts after upgrade: %v", counts)
+			}
+			if n, err := st.CountUserRows(context.Background(), "alice@example.com"); err != nil || n != 0 {
+				t.Errorf("post-condition after upgrade = %d, %v", n, err)
+			}
+			if _, rev, err := st.Get("bob"); err != nil || rev != 2 {
+				t.Errorf("bystander bob after erasure: rev=%d err=%v", rev, err)
+			}
+			if hasPolicies {
+				var by string
+				if err := st.db.QueryRow(`SELECT updated_by FROM parental_policies WHERE user_id='kid'`).Scan(&by); err != nil || by != AnonymisedActor {
+					t.Errorf("kid updated_by = %q, %v", by, err)
+				}
+				if doc, err := st.GetParentalPolicy(context.Background(), parental.Scope{TenantID: "home", UserID: "bob"}); err != nil || doc.State != "configured" {
+					t.Errorf("bob policy after erasure: %+v %v", doc, err)
+				}
 			}
 			moduletest.RequireIntegrity(t, st.db)
 		})

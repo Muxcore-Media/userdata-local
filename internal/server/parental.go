@@ -66,6 +66,10 @@ func (s *Server) handleParentalPolicy(w http.ResponseWriter, r *http.Request) {
 		}
 		document, err = s.store.PutParentalPolicy(ctx, scope, actor, update)
 	}
+	if errors.Is(err, store.ErrUserErased) {
+		writePolicyError(w, http.StatusGone, CodePolicyAccountErased)
+		return
+	}
 	if errors.Is(err, store.ErrPolicyConflict) {
 		writePolicyError(w, http.StatusConflict, "policy.revision_conflict")
 		return
