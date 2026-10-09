@@ -17,6 +17,7 @@ import (
 
 	"github.com/Muxcore-Media/core/pkg/contracts"
 	modulesdk "github.com/Muxcore-Media/core/sdk/go/module"
+	"github.com/Muxcore-Media/core/sdk/go/module/erasure"
 	manifest "github.com/Muxcore-Media/userdata-local"
 	"github.com/Muxcore-Media/userdata-local/internal/auth"
 	"github.com/Muxcore-Media/userdata-local/internal/grpctls"
@@ -49,6 +50,15 @@ type Module struct {
 	httpAddr     string
 	dbPath       string
 	authAddr     string
+
+	// ADR-0035 erasure reconciler.
+	erasureDialer   *erasure.ProviderDialer
+	erasureTune     func(*erasure.Config)
+	coreConn        *grpc.ClientConn
+	reconciler      *erasure.Reconciler
+	erasureCancel   context.CancelFunc
+	erasureDone     chan struct{}
+	erasureInterval time.Duration
 }
 
 // Config holds module settings. Non-empty fields override environment.
@@ -60,6 +70,12 @@ type Config struct {
 	AuthAddr string
 	// AuthProvider overrides the default auth-local sidecar client (tests).
 	AuthProvider contracts.AuthProvider
+	// ErasureDialer overrides discovery of the identity provider through the
+	// core connection (tests). ErasureInterval overrides
+	// ERASURE_SWEEP_INTERVAL; ErasureTune adjusts the reconciler config.
+	ErasureDialer   *erasure.ProviderDialer
+	ErasureInterval time.Duration
+	ErasureTune     func(*erasure.Config)
 }
 
 // NewModule constructs the module with env fallbacks.
@@ -96,6 +112,10 @@ func NewModule(cfg Config) *Module {
 		dbPath:       cfg.DBPath,
 		authAddr:     cfg.AuthAddr,
 		authProvider: cfg.AuthProvider,
+
+		erasureDialer:   cfg.ErasureDialer,
+		erasureInterval: cfg.ErasureInterval,
+		erasureTune:     cfg.ErasureTune,
 	}
 }
 
@@ -151,6 +171,9 @@ func (m *Module) Init(ctx context.Context) (initErr error) {
 		m.authConn = conn
 		provider = auth.NewSidecarAuthProvider(conn)
 		slog.Info("userdata-local auth wired to auth-local", "addr", m.authAddr)
+	}
+	if err := m.setupErasure(); err != nil {
+		return err
 	}
 	m.guard = auth.NewGuard(provider)
 	m.srv = server.New(m.store, m.guard)
@@ -209,10 +232,13 @@ func (m *Module) Start(ctx context.Context) error {
 			slog.Error("userdata-local HTTP error", "error", err)
 		}
 	}()
+	m.startErasure()
 	return nil
 }
 
 func (m *Module) Stop(ctx context.Context) error {
+	// The reconciler writes to the store: stop and wait for it first.
+	m.stopErasure(ctx)
 	if m.grpcSrv != nil {
 		m.grpcSrv.GracefulStop()
 	}

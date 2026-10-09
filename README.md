@@ -38,6 +38,7 @@ Each household user has one JSON blob (`progress`, `favorites`, `prefs`, `playli
 | `MUXCORE_CA_EXPORT_DIR` | — | Mounted core CA directory; its `ca.crt` is used when `MUXCORE_TLS_CA` is unset and the file exists |
 | `MUXCORE_PROFILE` | `household` unless an insecure flag infers legacy dev | `dev`, `household`, or `staging` (household alias); unknown values fail |
 | `USERDATA_TLS_CERT` / `USERDATA_TLS_KEY` / `USERDATA_TLS_CA` | — | gRPC listener TLS overrides |
+| `ERASURE_SWEEP_INTERVAL` | `5m` | Period of the ADR-0035 user-erasure reconciler (Go duration, jittered, clamped to 30s–24h; invalid values fail startup). The reconciler also sweeps at startup. It needs a core connection (`MUXCORE_GRPC_ADDR`); the household profile refuses to start without one, dev logs a warning and runs without it |
 | `MUXCORE_INSECURE_DISABLE_TLS` | — | Explicit dev-only plaintext. The HTTP listener and clients read it exactly like core and the SDK: this variable or the deprecated `MUXCORE_DEV_TLS_SKIP`, equal to exactly `true` or `1` (after trimming space). Any other spelling (`TRUE`, `yes`, a typo) and `MUXCORE_GRPC_INSECURE` are **not** insecure flags for HTTP, which stays on mTLS. The gRPC listener's own legacy handling of `MUXCORE_GRPC_INSECURE` is unchanged |
 
 ---
@@ -165,7 +166,7 @@ Proto: `proto/muxcore/userdata/v1/userdata.proto`
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/api/userdata` | Return merged blob for authenticated user |
-| `PUT` | `/api/userdata` | Merge request JSON blob (request body up to 4 MiB); return merged blob. A merge whose JSON would exceed 8 MiB (the client's response cap) is refused with `413` and nothing is stored (gRPC `Put`: `ResourceExhausted`) |
+| `PUT` | `/api/userdata` | Merge request JSON blob (request body up to 4 MiB); return merged blob. A user with an applied erasure (ADR-0035) is refused with `410` and `{"code":"userdata.account_erased"}` (gRPC `Put`: `FailedPrecondition`, message `userdata.account_erased`). A merge whose JSON would exceed 8 MiB (the client's response cap) is refused with `413` and nothing is stored (gRPC `Put`: `ResourceExhausted`) |
 | `GET` | `/api/parental-policy` | Read authoritative policy for self or a same-tenant account as admin |
 | `PUT` | `/api/parental-policy` | Admin-only, revision-checked policy replacement |
 | `GET`, `HEAD` | `/health` | Admitted mesh health check; no user bearer, empty HEAD body |
@@ -252,7 +253,8 @@ unavailable to future consumers, distinct from genuinely unrated content.
 
 Responses use `Cache-Control: no-store`. Errors return a stable `code` and no
 submitted policy/credentials: 400 invalid input, 401 unauthenticated, 403
-forbidden, 404 unknown target account, 409 stale revision, 413 body over 32 KiB,
+forbidden, 404 unknown target account, 409 stale revision, 410 `policy.account_erased`
+(target or acting user has an applied ADR-0035 erasure), 413 body over 32 KiB,
 405 unsupported method, or 503 auth/storage unavailable. Successful PUT returns
 the configured document with an incremented revision. Updates use SQLite
 compare-and-swap; callers must read/review current policy before retrying a 409.
@@ -265,6 +267,31 @@ enforcement after consumer integration. No legacy policy is automatically
 migrated. Follow-up migration must read the protected admin-ui `parental.json`
 and use authenticated revision-checked writes. Profile/PIN grants and complete
 BFF media enforcement remain separate work.
+
+---
+
+## User erasure (ADR-0035)
+
+userdata-local is a personal-data owner and runs the shared `erasure.Reconciler` (core SDK
+`sdk/go/module/erasure`). The identity provider's erasure ledger is the **only** authority: the
+reconciler discovers the exclusive `identity` provider through core, verifies its certificate CN,
+pages the whole ledger at startup and every `ERASURE_SWEEP_INTERVAL`, and acknowledges each
+tombstone. No event, header or HTTP/gRPC request on this module erases anything.
+
+Per tombstone, in **one** SQLite transaction that also inserts the `erasure_applied` record
+(`erasure_id`, `user_id`, `tenant_id`, `applied_at`, `counts_json`):
+
+- the user's `user_blobs` row is deleted (exact id; no viewer-profile sibling keys exist yet);
+- the user's `parental_policies` row is deleted. User ids are globally unique, so deletion is by
+  id; the tombstone's tenant is recorded, and a row for the same id under a different tenant is
+  deleted too and reported separately as `parental_policies_other_tenant`;
+- other users' policies whose `updated_by` is the erased user are kept and `updated_by` becomes
+  `deleted-user` (`parental_policies_updated_by` count).
+
+After the record exists, writes for that user id (`PUT /api/userdata`, `PUT /api/parental-policy`,
+gRPC `Put`, and policy writes made *by* that id) are refused: HTTP `410` with
+`userdata.account_erased` / `policy.account_erased`, gRPC `FailedPrecondition`. The check reads the
+table on every write, so it survives restarts and does not rely on process memory. Reads are unchanged.
 
 ---
 

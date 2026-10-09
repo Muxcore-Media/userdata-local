@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -49,7 +50,43 @@ func (s *Store) migrate() error {
 	if err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	}
-	return s.migrateParentalPolicies()
+	if err := s.migrateParentalPolicies(); err != nil {
+		return err
+	}
+	return s.migrateErasure()
+}
+
+// persistBlobLocked upserts the blob in one transaction that first refuses a
+// user with an applied erasure (ADR-0035), so a late write cannot resurrect
+// erased data. The caller holds s.mu.
+func (s *Store) persistBlobLocked(ctx context.Context, userID string, raw []byte, revision int64) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("persist blob: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	erased, err := userErasedTx(ctx, tx, userID)
+	if err != nil {
+		return err
+	}
+	if erased {
+		return ErrUserErased
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO user_blobs (user_id, json_blob, revision, updated_at)
+		VALUES (?, ?, ?, datetime('now'))
+		ON CONFLICT(user_id) DO UPDATE SET
+			json_blob = excluded.json_blob,
+			revision = excluded.revision,
+			updated_at = datetime('now')`,
+		userID, raw, revision,
+	); err != nil {
+		return fmt.Errorf("persist blob: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("persist blob: %w", err)
+	}
+	return nil
 }
 
 // Close closes the database handle.
@@ -103,17 +140,8 @@ func (s *Store) Put(userID string, incoming models.Blob) (models.Blob, int64, er
 		return models.Blob{}, 0, ErrBlobTooLarge
 	}
 	revision++
-	_, err = s.db.Exec(`
-		INSERT INTO user_blobs (user_id, json_blob, revision, updated_at)
-		VALUES (?, ?, ?, datetime('now'))
-		ON CONFLICT(user_id) DO UPDATE SET
-			json_blob = excluded.json_blob,
-			revision = excluded.revision,
-			updated_at = datetime('now')`,
-		userID, raw, revision,
-	)
-	if err != nil {
-		return models.Blob{}, 0, fmt.Errorf("persist blob: %w", err)
+	if err := s.persistBlobLocked(context.Background(), userID, raw, revision); err != nil {
+		return models.Blob{}, 0, err
 	}
 	return merged, revision, nil
 }
@@ -183,17 +211,8 @@ func (s *Store) saveLocked(userID string, blob models.Blob, revision int64) (mod
 		return models.Blob{}, 0, err
 	}
 	revision++
-	_, err = s.db.Exec(`
-		INSERT INTO user_blobs (user_id, json_blob, revision, updated_at)
-		VALUES (?, ?, ?, datetime('now'))
-		ON CONFLICT(user_id) DO UPDATE SET
-			json_blob = excluded.json_blob,
-			revision = excluded.revision,
-			updated_at = datetime('now')`,
-		userID, raw, revision,
-	)
-	if err != nil {
-		return models.Blob{}, 0, fmt.Errorf("persist blob: %w", err)
+	if err := s.persistBlobLocked(context.Background(), userID, raw, revision); err != nil {
+		return models.Blob{}, 0, err
 	}
 	return blob, revision, nil
 }

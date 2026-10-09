@@ -30,6 +30,7 @@ MuxCore sidecar module (`userdata-local`).
 | `AUTH_LOCAL_GRPC_ADDR` | `localhost:9403` | auth-local gRPC for session validation |
 | `MUXCORE_GRPC_ADDR` | — | Core mesh address |
 | `MUXCORE_MODULE_ID` | `userdata-local` | Module ID override |
+| `ERASURE_SWEEP_INTERVAL` | `5m` | ADR-0035 user-erasure reconciler sweep period (needs the core connection; household requires it) |
 
 HTTP requests require `Authorization: Bearer <session>` validated via auth-local and `X-MuxCore-User-Id` matching the authenticated household user id.
 Secure HTTP additionally requires the verified module CN/method/path admission
@@ -50,6 +51,7 @@ make build
 - gRPC: `muxcore.userdata.v1.UserDataService` (`Get`, `Put`, `ListContinueWatching`)
 - HTTP: `GET/PUT /api/userdata` with JSON blob body
 - HTTP: `GET/PUT /api/parental-policy`; fresh bearer, verified tenant, self/admin reads and admin-only revision-checked writes (README contract)
-- Store: SQLite `user_blobs` keyed by `user_id`; independent `parental_policies` keyed by `(tenant_id,user_id)`
+- Store: SQLite `user_blobs` keyed by `user_id`; independent `parental_policies` keyed by `(tenant_id,user_id)`; `erasure_applied` records ADR-0035 erasures and makes writes for an erased user id fail (`410 userdata.account_erased` / `policy.account_erased`)
+- Erasure: only the identity provider's ledger, via `erasure.Reconciler` (`internal/erasure.go`), may erase; never add an event/HTTP trigger
 
 Tracked by https://github.com/Muxcore-Media/umbrella/issues/19

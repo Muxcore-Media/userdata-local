@@ -86,6 +86,18 @@ func (s *Store) PutParentalPolicy(ctx context.Context, scope parental.Scope, act
 		return parental.Document{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	// ADR-0035: no write for (or by) a user with an applied erasure, so a late
+	// request cannot recreate policy data or re-introduce the erased id as
+	// updated_by.
+	for _, id := range []string{scope.UserID, actor} {
+		erased, eerr := userErasedTx(ctx, tx, id)
+		if eerr != nil {
+			return parental.Document{}, eerr
+		}
+		if erased {
+			return parental.Document{}, ErrUserErased
+		}
+	}
 	var result sql.Result
 	if update.ExpectedRevision == 0 {
 		result, err = tx.ExecContext(ctx, `INSERT INTO parental_policies

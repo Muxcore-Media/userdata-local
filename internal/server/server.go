@@ -17,6 +17,15 @@ import (
 	userdatav1 "github.com/Muxcore-Media/userdata-local/proto/gen/muxcore/userdata/v1"
 )
 
+// CodeUserdataAccountErased is the stable error code for a write refused
+// because the user id has an applied ADR-0035 erasure: HTTP 410 Gone with
+// {"code":"userdata.account_erased"}, gRPC FailedPrecondition with this text.
+const CodeUserdataAccountErased = "userdata.account_erased"
+
+// CodePolicyAccountErased is the same refusal on /api/parental-policy
+// (ADR-0030 "policy.*" code family): HTTP 410 Gone.
+const CodePolicyAccountErased = "policy.account_erased"
+
 // Server implements UserDataService and HTTP handlers.
 type Server struct {
 	userdatav1.UnimplementedUserDataServiceServer
@@ -73,6 +82,9 @@ func (s *Server) Put(ctx context.Context, req *userdatav1.PutRequest) (*userdata
 		return nil, status.Error(codes.InvalidArgument, "invalid json blob")
 	}
 	blob, revision, err := s.store.Put(req.GetUserId(), incoming)
+	if errors.Is(err, store.ErrUserErased) {
+		return nil, status.Error(codes.FailedPrecondition, CodeUserdataAccountErased)
+	}
 	if errors.Is(err, store.ErrBlobTooLarge) {
 		return nil, status.Error(codes.ResourceExhausted, err.Error())
 	}
@@ -150,6 +162,13 @@ func (s *Server) writeBlob(w http.ResponseWriter, userID string, body []byte) {
 			return
 		}
 		blob, _, err := s.store.Put(userID, incoming)
+		if errors.Is(err, store.ErrUserErased) {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Cache-Control", "no-store")
+			w.WriteHeader(http.StatusGone)
+			_ = json.NewEncoder(w).Encode(map[string]string{"code": CodeUserdataAccountErased})
+			return
+		}
 		if errors.Is(err, store.ErrBlobTooLarge) {
 			http.Error(w, "userdata blob too large", http.StatusRequestEntityTooLarge)
 			return

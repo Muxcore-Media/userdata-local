@@ -1,5 +1,20 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- ADR-0035/T-M4-07 slice E3: the shared `erasure.Reconciler` (core `sdk/go/module/erasure`
+  v0.6.17, sdk/go/module v0.6.7) applies the identity provider's erasure ledger. One transaction
+  deletes the user's `user_blobs` and `parental_policies` rows, anonymises `updated_by` on other
+  users' policies to `deleted-user`, and records the new `erasure_applied` table. Configured by
+  `ERASURE_SWEEP_INTERVAL` (default 5m); the household profile requires a core connection.
+- Writes for a user id with an applied erasure are refused: HTTP `410`
+  (`userdata.account_erased`, `policy.account_erased`), gRPC `Put` `FailedPrecondition`.
+- ADR-0015 upgrade snapshot `v0.1.6.db`.
+
+### Changed
+- Dependencies: core v0.6.17, sdk/go/module v0.6.7.
+
 ## [0.1.6] - 2026-10-09
 
 Source release only (ADR-0033): the HTTP provider is mTLS-only in the household profile, so BFF and admin-ui must consume the new `httpclient` and the deployment must switch to `https://` before any running household takes this version (consumers S9b/S9c, deployment S9d).
