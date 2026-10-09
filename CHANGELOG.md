@@ -1,6 +1,8 @@
 # Changelog
 
-## [Unreleased]
+## [0.1.6] - 2026-10-09
+
+Source release only (ADR-0033): the HTTP provider is mTLS-only in the household profile, so BFF and admin-ui must consume the new `httpclient` and the deployment must switch to `https://` before any running household takes this version (consumers S9b/S9c, deployment S9d).
 
 ### Added
 - ADR-0033/S9a HTTP transport: strict core-CA mTLS, fixed provider SAN/CN and
