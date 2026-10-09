@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 
@@ -10,6 +11,10 @@ import (
 
 	"github.com/Muxcore-Media/userdata-local/internal/models"
 )
+
+// ErrBlobTooLarge is returned by Put when the merged blob would exceed
+// models.MaxBlobBytes. The stored blob and revision are left unchanged.
+var ErrBlobTooLarge = errors.New("userdata blob too large")
 
 // Store persists per-user userdata blobs in SQLite.
 type Store struct {
@@ -93,6 +98,9 @@ func (s *Store) Put(userID string, incoming models.Blob) (models.Blob, int64, er
 	raw, err := json.Marshal(merged)
 	if err != nil {
 		return models.Blob{}, 0, err
+	}
+	if len(raw) > models.MaxBlobBytes {
+		return models.Blob{}, 0, ErrBlobTooLarge
 	}
 	revision++
 	_, err = s.db.Exec(`
