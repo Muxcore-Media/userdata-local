@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Muxcore-Media/core/sdk/go/module/meshid"
+
 	"github.com/Muxcore-Media/userdata-local/internal/testtls"
 )
 
@@ -177,15 +179,17 @@ func TestAdmissionDoesNotTrustUnverifiedPeer(t *testing.T) {
 
 func cleanEnv(t *testing.T) {
 	t.Helper()
-	for _, name := range []string{"MUXCORE_PROFILE", "MUXCORE_INSECURE_DISABLE_TLS", "MUXCORE_GRPC_INSECURE", "MUXCORE_DEV_TLS_SKIP", "MUXCORE_TLS_CERT", "MUXCORE_TLS_KEY", "MUXCORE_TLS_CA", "MUXCORE_TLS_DIR", "MUXCORE_CA_EXPORT_DIR"} {
+	for _, name := range []string{"MUXCORE_PROFILE", "MUXCORE_INSECURE_DISABLE_TLS", "MUXCORE_GRPC_INSECURE", "MUXCORE_DEV_TLS_SKIP", "MUXCORE_MODULE_ID", "MUXCORE_DATA_DIR", "MUXCORE_TLS_CERT", "MUXCORE_TLS_KEY", "MUXCORE_TLS_CA", "MUXCORE_TLS_DIR", "MUXCORE_CA_EXPORT_DIR"} {
 		t.Setenv(name, "")
 	}
 }
 
+// Only the flags core (profile.insecureFlag) and the SDK (meshid.InsecureFromEnv)
+// honour select the insecure path, with exactly their spelling.
 func TestProfilesAndAliases(t *testing.T) {
 	for _, profile := range []string{"household", "staging", "dev", "", "typo"} {
-		for _, alias := range []string{"MUXCORE_INSECURE_DISABLE_TLS", "MUXCORE_GRPC_INSECURE", "MUXCORE_DEV_TLS_SKIP"} {
-			for _, value := range []string{"true", "1", "TRUE"} {
+		for _, alias := range []string{"MUXCORE_INSECURE_DISABLE_TLS", "MUXCORE_DEV_TLS_SKIP"} {
+			for _, value := range []string{"true", "1", " true "} {
 				t.Run(profile+alias+value, func(t *testing.T) {
 					cleanEnv(t)
 					t.Setenv("MUXCORE_PROFILE", profile)
@@ -197,24 +201,81 @@ func TestProfilesAndAliases(t *testing.T) {
 					}
 					if wantOK {
 						tlsCfg, err := ServerConfig(cfg)
-						if err != nil || tlsCfg != nil {
-							t.Fatalf("dev: %v", err)
+						if !cfg.Insecure || err != nil || tlsCfg != nil {
+							t.Fatalf("dev: insecure=%v %v", cfg.Insecure, err)
 						}
 					}
 				})
 			}
 		}
 	}
-	cleanEnv(t)
-	t.Setenv("MUXCORE_PROFILE", "dev")
-	t.Setenv("MUXCORE_DEV_TLS_SKIP", "ture")
-	if _, err := FromEnv(Provider); err == nil {
-		t.Fatal("invalid alias value accepted")
-	}
 	for _, cfg := range []Config{{Profile: "household", Insecure: true}, {Profile: "staging", Insecure: true}, {Profile: "typo", Insecure: true}} {
 		if _, err := ServerConfig(cfg); err == nil {
 			t.Fatal("listener relied on prior SDK profile validation")
 		}
+	}
+}
+
+// Spellings that core and the SDK do not treat as insecure (so core resolves
+// household and the SDK enrolls over mTLS) must never yield a plaintext listener,
+// including with the profile unset.
+func TestNonCoreInsecureSpellingsStaySecure(t *testing.T) {
+	type setting struct{ name, value string }
+	var settings []setting
+	for _, value := range []string{"true", "1", "TRUE", "True", "yes", "on", "2", "ture", "t", "false", "0"} {
+		settings = append(settings, setting{"MUXCORE_GRPC_INSECURE", value})
+	}
+	for _, name := range []string{"MUXCORE_INSECURE_DISABLE_TLS", "MUXCORE_DEV_TLS_SKIP"} {
+		for _, value := range []string{"TRUE", "True", "tRuE", "yes", "on", "2", "ture", "t", "false", "0", "-1"} {
+			settings = append(settings, setting{name, value})
+		}
+	}
+	for _, profile := range []string{"", "household", "staging", "dev"} {
+		for _, st := range settings {
+			t.Run(profile+"/"+st.name+"="+st.value, func(t *testing.T) {
+				cleanEnv(t)
+				t.Setenv("MUXCORE_PROFILE", profile)
+				t.Setenv(st.name, st.value)
+				cfg, err := FromEnv(Provider)
+				if err != nil {
+					t.Fatalf("core ignores this value, so must the transport: %v", err)
+				}
+				if cfg.Insecure {
+					t.Fatal("non-core insecure spelling selected plaintext")
+				}
+				tlsCfg, err := ServerConfig(cfg)
+				if err == nil || tlsCfg != nil {
+					t.Fatalf("secure path served without identity material: %v", err)
+				}
+			})
+		}
+	}
+}
+
+// The detection must stay identical to the SDK's (which mirrors core's) for every
+// spelling, except that MUXCORE_GRPC_INSECURE is not consulted by either.
+func TestInsecureDetectionMatchesSDK(t *testing.T) {
+	values := []string{"", "true", "1", "TRUE", "True", " true ", "\t1\n", "yes", "on", "0", "false", "2", "ture", "t", "y"}
+	names := []string{"MUXCORE_INSECURE_DISABLE_TLS", "MUXCORE_DEV_TLS_SKIP", "MUXCORE_GRPC_INSECURE"}
+	for _, name := range names {
+		for _, value := range values {
+			getenv := func(key string) string {
+				if key == name {
+					return value
+				}
+				return ""
+			}
+			if got, want := InsecureFromEnv(getenv), meshid.InsecureFromEnv(getenv); got != want {
+				t.Errorf("%s=%q: transport=%v sdk=%v", name, value, got, want)
+			}
+		}
+	}
+	// Both flags together: any one honoured spelling wins.
+	both := func(key string) string {
+		return map[string]string{"MUXCORE_INSECURE_DISABLE_TLS": "TRUE", "MUXCORE_DEV_TLS_SKIP": "1"}[key]
+	}
+	if !InsecureFromEnv(both) || !meshid.InsecureFromEnv(both) {
+		t.Fatal("legacy flag ignored")
 	}
 }
 
@@ -323,4 +384,131 @@ func mustRead(t *testing.T, path string) []byte {
 		t.Fatal(err)
 	}
 	return b
+}
+
+func copyFile(t *testing.T, from, to string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(to), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(to, mustRead(t, from), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func envMap(m map[string]string) func(string) string { return func(k string) string { return m[k] } }
+
+// The health probe resolves identity as the daemon's meshid.Ensure does.
+func TestIdentityResolutionMatchesMeshID(t *testing.T) {
+	ca := testtls.NewCA(t)
+	id := ca.Issue(t, Provider)
+	data := t.TempDir()
+	meshDir := filepath.Join(data, "mesh-id")
+	copyFile(t, id.CertFile, filepath.Join(meshDir, "module.crt"))
+	copyFile(t, id.KeyFile, filepath.Join(meshDir, "module.key"))
+	copyFile(t, ca.File, filepath.Join(meshDir, "ca.crt"))
+
+	t.Run("data dir default", func(t *testing.T) {
+		cfg, err := fromEnv(Provider, envMap(map[string]string{"MUXCORE_DATA_DIR": data}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.CertFile != filepath.Join(meshDir, "module.crt") || cfg.KeyFile != filepath.Join(meshDir, "module.key") || cfg.CAFile != filepath.Join(meshDir, "ca.crt") {
+			t.Fatalf("not <data>/mesh-id: %+v", cfg)
+		}
+		if _, err := ServerConfig(cfg); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("data dir defaults to ./data", func(t *testing.T) {
+		cfg, err := fromEnv(Provider, envMap(nil))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.CertFile != filepath.Join("data", "mesh-id", "module.crt") || cfg.CAFile != filepath.Join("data", "mesh-id", "ca.crt") {
+			t.Fatalf("unexpected defaults: %+v", cfg)
+		}
+	})
+	t.Run("TLS dir wins over data dir", func(t *testing.T) {
+		cfg, err := fromEnv(Provider, envMap(map[string]string{"MUXCORE_DATA_DIR": "elsewhere", "MUXCORE_TLS_DIR": meshDir}))
+		if err != nil || cfg.CertFile != filepath.Join(meshDir, "module.crt") {
+			t.Fatalf("%+v %v", cfg, err)
+		}
+	})
+	t.Run("explicit CA beats mounted CA beats stored CA", func(t *testing.T) {
+		export := t.TempDir()
+		copyFile(t, ca.File, filepath.Join(export, "ca.crt"))
+		cfg, _ := fromEnv(Provider, envMap(map[string]string{"MUXCORE_TLS_DIR": meshDir, "MUXCORE_CA_EXPORT_DIR": export}))
+		if cfg.CAFile != filepath.Join(export, "ca.crt") {
+			t.Fatalf("mounted CA not preferred: %s", cfg.CAFile)
+		}
+		cfg, _ = fromEnv(Provider, envMap(map[string]string{"MUXCORE_TLS_DIR": meshDir, "MUXCORE_CA_EXPORT_DIR": export, "MUXCORE_TLS_CA": "/explicit/ca.crt"}))
+		if cfg.CAFile != "/explicit/ca.crt" {
+			t.Fatalf("explicit CA not preferred: %s", cfg.CAFile)
+		}
+	})
+	t.Run("mounted CA directory without ca.crt falls back to stored CA", func(t *testing.T) {
+		cfg, err := fromEnv(Provider, envMap(map[string]string{"MUXCORE_TLS_DIR": meshDir, "MUXCORE_CA_EXPORT_DIR": t.TempDir()}))
+		if err != nil || cfg.CAFile != filepath.Join(meshDir, "ca.crt") {
+			t.Fatalf("%+v %v", cfg, err)
+		}
+		if _, err := ServerConfig(cfg); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("explicit cert and key skip the directory", func(t *testing.T) {
+		cfg, err := fromEnv(Provider, envMap(map[string]string{"MUXCORE_TLS_CERT": "c", "MUXCORE_TLS_KEY": "k", "MUXCORE_TLS_DIR": meshDir}))
+		if err != nil || cfg.CertFile != "c" || cfg.KeyFile != "k" || cfg.CAFile != "" {
+			t.Fatalf("%+v %v", cfg, err)
+		}
+	})
+	t.Run("partial explicit paths stay an error", func(t *testing.T) {
+		if _, err := fromEnv(Provider, envMap(map[string]string{"MUXCORE_TLS_CERT": "c", "MUXCORE_TLS_DIR": meshDir})); err == nil {
+			t.Fatal("partial explicit paths silently replaced by the directory")
+		}
+	})
+}
+
+// meshid enrolls CN = MUXCORE_MODULE_ID; the HTTP identity is bound to the fixed
+// module ID, so an override is refused up front with a clear message.
+func TestModuleIDOverrideIsRejectedForSecureTransport(t *testing.T) {
+	ca := testtls.NewCA(t)
+	id := ca.Issue(t, "renamed")
+	secure := map[string]string{"MUXCORE_PROFILE": "household", "MUXCORE_TLS_CERT": id.CertFile, "MUXCORE_TLS_KEY": id.KeyFile, "MUXCORE_TLS_CA": ca.File}
+	with := func(extra map[string]string) func(string) string {
+		m := map[string]string{}
+		for k, v := range secure {
+			m[k] = v
+		}
+		for k, v := range extra {
+			m[k] = v
+		}
+		return envMap(m)
+	}
+	_, err := fromEnv(Provider, with(map[string]string{"MUXCORE_MODULE_ID": "renamed"}))
+	if err == nil || !strings.Contains(err.Error(), "MUXCORE_MODULE_ID") || !strings.Contains(err.Error(), "unsupported") {
+		t.Fatalf("override not rejected clearly: %v", err)
+	}
+	for _, same := range []string{"", Provider, " " + Provider + " "} {
+		if _, err := fromEnv(Provider, with(map[string]string{"MUXCORE_MODULE_ID": same})); err != nil {
+			t.Fatalf("matching module ID %q rejected: %v", same, err)
+		}
+	}
+	// A cert enrolled for the override can never be the provider identity.
+	cfg, err := fromEnv("renamed", with(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ServerConfig(cfg); err == nil || !strings.Contains(err.Error(), "MUXCORE_MODULE_ID") {
+		t.Fatalf("listener accepted a non-provider module ID: %v", err)
+	}
+	// Plaintext dev carries no certificate, so the override is irrelevant there.
+	if _, err := fromEnv(Provider, envMap(map[string]string{"MUXCORE_PROFILE": "dev", "MUXCORE_INSECURE_DISABLE_TLS": "true", "MUXCORE_MODULE_ID": "renamed"})); err != nil {
+		t.Fatalf("insecure dev rejected override: %v", err)
+	}
+	// And a client whose cert CN differs from its configured ID names both.
+	mismatch := Config{Profile: "household", ModuleID: "media-ui", CertFile: id.CertFile, KeyFile: id.KeyFile, CAFile: ca.File}
+	if _, _, err := LoadIdentity(mismatch, x509.ExtKeyUsageClientAuth); err == nil || !strings.Contains(err.Error(), `"renamed"`) || !strings.Contains(err.Error(), `"media-ui"`) {
+		t.Fatalf("CN mismatch message: %v", err)
+	}
 }

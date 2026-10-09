@@ -112,7 +112,7 @@ func TestPackagedProbeExecutable(t *testing.T) {
 		})
 	}
 	for _, profile := range []string{"household", "staging"} {
-		for _, alias := range []string{"MUXCORE_INSECURE_DISABLE_TLS", "MUXCORE_GRPC_INSECURE", "MUXCORE_DEV_TLS_SKIP"} {
+		for _, alias := range []string{"MUXCORE_INSECURE_DISABLE_TLS", "MUXCORE_DEV_TLS_SKIP"} {
 			t.Run(profile+alias, func(t *testing.T) {
 				env := cloneEnv(explicit)
 				env["MUXCORE_PROFILE"] = profile
@@ -131,6 +131,48 @@ func TestPackagedProbeExecutable(t *testing.T) {
 	})
 	if calls.Load() != before {
 		t.Fatal("bad configuration reached provider")
+	}
+	before = calls.Load()
+	// Only the spellings core and the SDK honour select plaintext; anything else
+	// leaves the household/unset-profile probe on its secure identity path.
+	for name, env := range map[string]map[string]string{
+		"legacy gRPC alias":           {"MUXCORE_PROFILE": "household", "MUXCORE_GRPC_INSECURE": "true"},
+		"legacy gRPC alias, no prof.": {"MUXCORE_GRPC_INSECURE": "1"},
+		"upper-case flag, no profile": {"MUXCORE_INSECURE_DISABLE_TLS": "TRUE"},
+		"upper-case legacy flag":      {"MUXCORE_PROFILE": "household", "MUXCORE_DEV_TLS_SKIP": "True"},
+	} {
+		t.Run("secure despite "+name, func(t *testing.T) {
+			e := cloneEnv(explicit)
+			delete(e, "MUXCORE_PROFILE")
+			for k, v := range env {
+				e[k] = v
+			}
+			invoke(t, e, true, "--origin", s.URL)
+		})
+	}
+	t.Run("daemon default identity directory", func(t *testing.T) {
+		data := t.TempDir()
+		for from, to := range map[string]string{provider.CertFile: "module.crt", provider.KeyFile: "module.key", ca.File: "ca.crt"} {
+			raw, err := os.ReadFile(from)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(filepath.Join(data, "mesh-id"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(data, "mesh-id", to), raw, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		invoke(t, map[string]string{"MUXCORE_PROFILE": "household", "MUXCORE_DATA_DIR": data}, true, "--origin", s.URL)
+	})
+	t.Run("module ID override is unsupported", func(t *testing.T) {
+		e := cloneEnv(explicit)
+		e["MUXCORE_MODULE_ID"] = "renamed"
+		invoke(t, e, false, "--origin", s.URL)
+	})
+	if got, want := calls.Load(), before+5; got != want {
+		t.Fatalf("health invocations=%d want %d", got, want)
 	}
 	t.Run("wrong server", func(t *testing.T) {
 		wrong := ca.Issue(t, "admin-ui")

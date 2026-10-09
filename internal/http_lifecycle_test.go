@@ -14,6 +14,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/Muxcore-Media/core/pkg/contracts"
 	"github.com/Muxcore-Media/userdata-local/httpclient"
@@ -175,7 +176,7 @@ func TestHouseholdHTTPModuleBearerRevisionAndPersistence(t *testing.T) {
 	if err := <-failures; err != nil {
 		t.Fatal(err)
 	}
-	if !((a == 200 && b == 409) || (a == 409 && b == 200)) {
+	if (a != 200 || b != 409) && (a != 409 || b != 200) {
 		t.Fatalf("revision race statuses %d %d", a, b)
 	}
 	check(media, httpclient.PutUserdata, "kid", "kid", `{"favorites":{"fixture":{"title":"Local fixture"}}}`, 200)
@@ -250,7 +251,9 @@ func TestTransportStartupValidationAndCleanup(t *testing.T) {
 		{"missing HTTP CA", func(t *testing.T) { t.Setenv("MUXCORE_TLS_CA", "") }},
 		{"malformed gRPC override", func(t *testing.T) { t.Setenv("USERDATA_TLS_CERT", "missing"); t.Setenv("USERDATA_TLS_KEY", "missing") }},
 		{"unknown profile", func(t *testing.T) { t.Setenv("MUXCORE_PROFILE", "typo") }},
-		{"insecure household", func(t *testing.T) { t.Setenv("MUXCORE_GRPC_INSECURE", "1") }},
+		{"insecure household", func(t *testing.T) { t.Setenv("MUXCORE_INSECURE_DISABLE_TLS", "1") }},
+		{"legacy insecure household", func(t *testing.T) { t.Setenv("MUXCORE_DEV_TLS_SKIP", "true") }},
+		{"foreign module ID override", func(t *testing.T) { t.Setenv("MUXCORE_MODULE_ID", "renamed") }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			test.change(t)
@@ -301,6 +304,119 @@ func TestTransportStartupValidationAndCleanup(t *testing.T) {
 			requireBindable(t, httpAddr)
 		}
 	})
+}
+
+// Spellings that core and the SDK do not read as insecure leave core in
+// household and the SDK enrolling over mTLS, so the HTTP listener must serve TLS
+// with module admission (ADR-0033 section 3), even with the profile unset.
+func TestNonCoreInsecureSpellingsNeverServePlaintextHTTP(t *testing.T) {
+	for _, test := range []struct{ name, value string }{
+		{"MUXCORE_GRPC_INSECURE", "1"}, {"MUXCORE_GRPC_INSECURE", "true"},
+		{"MUXCORE_INSECURE_DISABLE_TLS", "TRUE"}, {"MUXCORE_DEV_TLS_SKIP", "True"},
+	} {
+		t.Run(test.name+"="+test.value, func(t *testing.T) {
+			ca := testtls.NewCA(t)
+			transportEnv(t, ca, ca.Issue(t, "userdata-local"))
+			t.Setenv("MUXCORE_PROFILE", "")
+			t.Setenv(test.name, test.value)
+			m := NewModule(Config{GRPCAddr: "127.0.0.1:0", HTTPAddr: "127.0.0.1:0", DBPath: filepath.Join(t.TempDir(), "userdata.db"), AuthProvider: freshTransportAuth()})
+			ctx := context.Background()
+			if err := m.Init(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if m.httpTLS == nil {
+				t.Fatal("HTTP listener is plaintext")
+			}
+			if err := m.Start(ctx); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = m.Stop(ctx) })
+			addr := m.httpLis.Addr().String()
+			req, err := http.NewRequest(http.MethodGet, "http://"+addr+"/health", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			plain := &http.Client{Transport: &http.Transport{Proxy: nil}}
+			defer plain.CloseIdleConnections()
+			if resp, err := plain.Do(req); err == nil {
+				_ = resp.Body.Close()
+				if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusUnauthorized {
+					t.Fatalf("plaintext request reached the handler: %d", resp.StatusCode)
+				}
+			}
+			id := ca.Issue(t, "admin-ui")
+			c, err := httpclient.New(httpclient.Config{Origin: "https://" + addr, ModuleID: "admin-ui", Profile: "household", CertFile: id.CertFile, KeyFile: id.KeyFile, CAFile: ca.File})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.CloseIdleConnections()
+			resp, err := c.Do(ctx, httpclient.GetHealth, nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("health status %d", resp.StatusCode)
+			}
+		})
+	}
+}
+
+// The provider refuses (413) a PUT whose merge with the stored blob would exceed
+// what the checked client can read back, instead of persisting an unreadable blob.
+func TestMergedBlobBoundaryIsReadableThroughClient(t *testing.T) {
+	ca := testtls.NewCA(t)
+	transportEnv(t, ca, ca.Issue(t, "userdata-local"))
+	m := NewModule(Config{GRPCAddr: "127.0.0.1:0", HTTPAddr: "127.0.0.1:0", DBPath: filepath.Join(t.TempDir(), "userdata.db"), AuthProvider: freshTransportAuth()})
+	ctx := context.Background()
+	if err := m.Init(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = m.Stop(ctx) })
+	id := ca.Issue(t, "media-ui")
+	c, err := httpclient.New(httpclient.Config{Origin: "https://" + m.httpLis.Addr().String(), ModuleID: "media-ui", Profile: "household", CertFile: id.CertFile, KeyFile: id.KeyFile, CAFile: ca.File, Timeout: 20 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.CloseIdleConnections()
+	do := func(op httpclient.Operation, body string) (int, int) {
+		t.Helper()
+		headers := http.Header{"Authorization": {"Bearer kid"}, "X-Muxcore-User-Id": {"kid"}, "Content-Type": {"application/json"}}
+		resp, err := c.Do(ctx, op, headers, strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("operation %v: %v", op, err)
+		}
+		defer resp.Body.Close()
+		data, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp.StatusCode, len(data)
+	}
+	favorite := func(id string, pad int) string {
+		return `{"favorites":{"` + id + `":{"id":"` + id + `","kind":"movie","title":"` + strings.Repeat("a", pad) + `","href":"/m"}}}`
+	}
+	// Each PUT body stays under the 4 MiB request cap; their merge grows toward 8 MiB.
+	const pad = 3<<20 + 512<<10
+	if status, _ := do(httpclient.PutUserdata, favorite("one", pad)); status != 200 {
+		t.Fatalf("first PUT status %d", status)
+	}
+	status, size := do(httpclient.PutUserdata, favorite("two", pad))
+	if status != 200 || size > httpclient.MaxResponseBytes {
+		t.Fatalf("second PUT status=%d size=%d", status, size)
+	}
+	if status, size := do(httpclient.GetUserdata, ""); status != 200 || size < 2*pad || size > httpclient.MaxResponseBytes {
+		t.Fatalf("merged blob unreadable through client: status=%d size=%d", status, size)
+	}
+	if status, _ := do(httpclient.PutUserdata, favorite("three", pad)); status != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversize merge status %d, want 413", status)
+	}
+	if status, size := do(httpclient.GetUserdata, ""); status != 200 || size > httpclient.MaxResponseBytes {
+		t.Fatalf("refused merge corrupted the stored blob: status=%d size=%d", status, size)
+	}
 }
 
 func TestExplicitDevHTTPRetainsUserAuthorization(t *testing.T) {

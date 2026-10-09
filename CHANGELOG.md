@@ -6,12 +6,28 @@
 - ADR-0033/S9a HTTP transport: strict core-CA mTLS, fixed provider SAN/CN and
   verified caller-CN method/path admission before existing user authorization.
 - Public `httpclient` package with fixed operations, caller identity validation,
-  origin binding, no proxy/redirect behavior, bounded requests and typed provider
+  origin binding, no proxy/redirect behavior, bounded requests (one deadline for
+  connect through complete body read, rechecked after the read) and typed provider
   unavailability distinct from application authorization failures.
 - Standalone `userdata-health` probe in host/image packaging, resolving only
   existing configured or mounted identity files without enrollment or storage.
 
 ### Changed
+- HTTP insecure-flag detection now matches core and the SDK exactly: only
+  `MUXCORE_INSECURE_DISABLE_TLS` / `MUXCORE_DEV_TLS_SKIP` equal to `true` or `1`
+  select plaintext. `MUXCORE_GRPC_INSECURE` and other spellings (`TRUE`, `yes`)
+  no longer select plaintext HTTP, and invalid values are ignored rather than
+  rejected, so an unset profile with such a value resolves to secure household
+  with module admission instead of an unauthenticated listener.
+- `userdata-health` / `httptransport.FromEnv` resolve identity like the SDK's
+  `meshid.Ensure`: default identity directory `$MUXCORE_DATA_DIR/mesh-id` (data
+  dir default `./data`), and `MUXCORE_CA_EXPORT_DIR/ca.crt` only when it exists.
+- A `MUXCORE_MODULE_ID` override other than `userdata-local` is unsupported for
+  secure HTTP and now fails startup/`FromEnv` with a clear message (certificate CN
+  mismatches also name both IDs).
+- `PUT /api/userdata` (and gRPC `Put`) refuses a merged blob over 8 MiB with `413`
+  (`ResourceExhausted`) instead of storing a blob the checked client cannot read;
+  `httpclient.MaxResponseBytes` is tied to the same limit.
 - Household HTTP intentionally rejects legacy plaintext clients; compatible
   consumers and authenticated probes must deploy together. Explicit insecure dev
   remains available with profile validation and warnings. No DB schema or gRPC

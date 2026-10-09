@@ -48,43 +48,102 @@ func ValidateMode(profile string, insecure bool) error {
 	return nil
 }
 
-// FromEnv resolves only existing identity paths. It never enrolls, changes the
-// environment, reads bootstrap tokens, generates material or uses system roots.
-func FromEnv(moduleID string) (Config, error) {
-	cfg := Config{Profile: os.Getenv("MUXCORE_PROFILE"), ModuleID: moduleID}
-	for _, name := range []string{"MUXCORE_INSECURE_DISABLE_TLS", "MUXCORE_GRPC_INSECURE", "MUXCORE_DEV_TLS_SKIP"} {
-		switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
-		case "", "false", "0":
-		case "true", "1":
-			cfg.Insecure = true
-		default:
-			return Config{}, fmt.Errorf("userdata HTTP: invalid boolean %s", name)
+// Environment variables read by FromEnv. Their names and semantics mirror the
+// SDK's meshid package and core's profile package (ADR-0016): they are copied
+// rather than imported because core's profile package is internal.
+const (
+	envProfile        = "MUXCORE_PROFILE"
+	envInsecure       = "MUXCORE_INSECURE_DISABLE_TLS"
+	envInsecureLegacy = "MUXCORE_DEV_TLS_SKIP"
+	envModuleID       = "MUXCORE_MODULE_ID"
+	envTLSCert        = "MUXCORE_TLS_CERT"
+	envTLSKey         = "MUXCORE_TLS_KEY"
+	envTLSCA          = "MUXCORE_TLS_CA"
+	envTLSDir         = "MUXCORE_TLS_DIR"
+	envCAExportDir    = "MUXCORE_CA_EXPORT_DIR"
+	envDataDir        = "MUXCORE_DATA_DIR"
+)
+
+// InsecureFromEnv reports whether the insecure flag is set exactly as core
+// (profile.insecureFlag) and the SDK (meshid.InsecureFromEnv) read it:
+// MUXCORE_INSECURE_DISABLE_TLS or the deprecated MUXCORE_DEV_TLS_SKIP, trimmed
+// of surrounding space, equal to exactly "true" or "1". Anything else (other
+// case, "yes", a typo) is not insecure, and MUXCORE_GRPC_INSECURE is not
+// consulted: core would resolve household and the SDK would enroll over mTLS,
+// so the HTTP listener must be secure too.
+func InsecureFromEnv(getenv func(string) string) bool {
+	for _, name := range []string{envInsecure, envInsecureLegacy} {
+		if v := strings.TrimSpace(getenv(name)); v == "true" || v == "1" {
+			return true
 		}
 	}
+	return false
+}
+
+// FromEnv resolves only existing identity paths, following the SDK's
+// meshid.Ensure resolution without ever enrolling, changing the environment,
+// reading bootstrap tokens, generating material or using system roots:
+//
+//   - MUXCORE_TLS_CERT and MUXCORE_TLS_KEY (both) are used as given. Unlike
+//     meshid, which would silently fall back to the identity directory, exactly
+//     one of them is a configuration error.
+//   - Otherwise the identity directory is MUXCORE_TLS_DIR, else
+//     $MUXCORE_DATA_DIR/mesh-id (MUXCORE_DATA_DIR defaults to ./data, relative
+//     to the working directory), holding module.crt and module.key.
+//   - The CA is MUXCORE_TLS_CA, else $MUXCORE_CA_EXPORT_DIR/ca.crt when that
+//     file exists, else ca.crt in the identity directory.
+//
+// The certificate is for moduleID, so a different MUXCORE_MODULE_ID override
+// (which makes the SDK enroll that CN) is rejected for secure transport.
+func FromEnv(moduleID string) (Config, error) {
+	return fromEnv(moduleID, os.Getenv)
+}
+
+func fromEnv(moduleID string, getenv func(string) string) (Config, error) {
+	cfg := Config{Profile: getenv(envProfile), ModuleID: moduleID, Insecure: InsecureFromEnv(getenv)}
 	if err := ValidateMode(cfg.Profile, cfg.Insecure); err != nil {
 		return Config{}, err
 	}
 	if cfg.Insecure {
 		return cfg, nil
 	}
-	cfg.CertFile = strings.TrimSpace(os.Getenv("MUXCORE_TLS_CERT"))
-	cfg.KeyFile = strings.TrimSpace(os.Getenv("MUXCORE_TLS_KEY"))
-	cfg.CAFile = strings.TrimSpace(os.Getenv("MUXCORE_TLS_CA"))
-	if (cfg.CertFile == "") != (cfg.KeyFile == "") {
-		return Config{}, fmt.Errorf("userdata HTTP: both MUXCORE_TLS_CERT and MUXCORE_TLS_KEY are required")
+	if override := strings.TrimSpace(getenv(envModuleID)); override != "" && override != moduleID {
+		return Config{}, fmt.Errorf("userdata HTTP: %s=%q is unsupported: the HTTP identity is bound to module ID %q "+
+			"(the SDK would enroll a certificate with CN %q); unset %s", envModuleID, override, moduleID, override, envModuleID)
 	}
-	dir := strings.TrimSpace(os.Getenv("MUXCORE_TLS_DIR"))
-	if cfg.CertFile == "" && dir != "" {
-		cfg.CertFile, cfg.KeyFile = filepath.Join(dir, "module.crt"), filepath.Join(dir, "module.key")
+	trim := func(name string) string { return strings.TrimSpace(getenv(name)) }
+	cfg.CertFile, cfg.KeyFile, cfg.CAFile = trim(envTLSCert), trim(envTLSKey), trim(envTLSCA)
+	if (cfg.CertFile == "") != (cfg.KeyFile == "") {
+		return Config{}, fmt.Errorf("userdata HTTP: both %s and %s are required", envTLSCert, envTLSKey)
 	}
 	if cfg.CAFile == "" {
-		if caDir := strings.TrimSpace(os.Getenv("MUXCORE_CA_EXPORT_DIR")); caDir != "" {
-			cfg.CAFile = filepath.Join(caDir, "ca.crt")
-		} else if dir != "" {
-			cfg.CAFile = filepath.Join(dir, "ca.crt")
+		if caDir := trim(envCAExportDir); caDir != "" {
+			if candidate := filepath.Join(caDir, "ca.crt"); fileExists(candidate) {
+				cfg.CAFile = candidate
+			}
 		}
 	}
+	if cfg.CertFile != "" {
+		return cfg, nil
+	}
+	dir := trim(envTLSDir)
+	if dir == "" {
+		data := trim(envDataDir)
+		if data == "" {
+			data = "data"
+		}
+		dir = filepath.Join(data, "mesh-id")
+	}
+	cfg.CertFile, cfg.KeyFile = filepath.Join(dir, "module.crt"), filepath.Join(dir, "module.key")
+	if cfg.CAFile == "" {
+		cfg.CAFile = filepath.Join(dir, "ca.crt")
+	}
 	return cfg, nil
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 func LoadIdentity(cfg Config, usage x509.ExtKeyUsage) (tls.Certificate, *x509.CertPool, error) {
@@ -125,7 +184,8 @@ func LoadIdentity(cfg Config, usage x509.ExtKeyUsage) (tls.Certificate, *x509.Ce
 		return tls.Certificate{}, nil, fmt.Errorf("userdata HTTP: parse identity: %w", err)
 	}
 	if leaf.Subject.CommonName != cfg.ModuleID {
-		return tls.Certificate{}, nil, fmt.Errorf("userdata HTTP: certificate does not identify configured module")
+		return tls.Certificate{}, nil, fmt.Errorf("userdata HTTP: certificate CN %q does not identify configured module %q",
+			leaf.Subject.CommonName, cfg.ModuleID)
 	}
 	intermediates := x509.NewCertPool()
 	for _, der := range pair.Certificate[1:] {
@@ -154,7 +214,7 @@ func ServerConfig(cfg Config) (*tls.Config, error) {
 		return nil, nil
 	}
 	if cfg.ModuleID != Provider {
-		return nil, fmt.Errorf("userdata HTTP: provider identity must be userdata-local")
+		return nil, fmt.Errorf("userdata HTTP: provider identity must be %s, not %q (MUXCORE_MODULE_ID overrides are unsupported)", Provider, cfg.ModuleID)
 	}
 	pair, roots, err := LoadIdentity(cfg, x509.ExtKeyUsageServerAuth)
 	if err != nil {
