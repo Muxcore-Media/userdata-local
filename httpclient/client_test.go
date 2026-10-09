@@ -250,15 +250,19 @@ func TestClientBoundsProxyCancellationAndOperations(t *testing.T) {
 			_, _ = w.Write([]byte(strings.Repeat("a", MaxResponseBytes+1)))
 			return
 		}
+		// Stalled handlers wait for the client to go away and then abort the
+		// connection. Returning normally would let net/http complete a valid
+		// (empty 200) response that the client can read just before its own
+		// teardown lands, which is the race the deadline recheck in Do closes.
 		if r.Header.Get("X-Test") == "delay" {
 			<-r.Context().Done()
-			return
+			panic(http.ErrAbortHandler)
 		}
 		if r.Header.Get("X-Test") == "body-delay" {
 			w.WriteHeader(http.StatusOK)
 			w.(http.Flusher).Flush()
 			<-r.Context().Done()
-			return
+			panic(http.ErrAbortHandler)
 		}
 		w.Header().Set("X-Route", r.Method+" "+r.URL.Path)
 		_, _ = w.Write([]byte("ok"))
@@ -305,6 +309,62 @@ func TestClientBoundsProxyCancellationAndOperations(t *testing.T) {
 	_, err = c.Do(ctx, GetPolicy, nil, nil)
 	if !errors.Is(err, ErrUnavailable) || !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancellation lost: %v", err)
+	}
+}
+
+// lateBody delivers a complete, valid body only after its request context has
+// expired, ignoring that context, exactly like a response that net/http finished
+// racing the client's connection teardown.
+type lateBody struct {
+	ctx  context.Context
+	done bool
+}
+
+func (b *lateBody) Read(p []byte) (int, error) {
+	if b.done {
+		return 0, io.EOF
+	}
+	<-b.ctx.Done()
+	b.done = true
+	return copy(p, "late"), io.EOF
+}
+func (b *lateBody) Close() error { return nil }
+
+type lateTransport struct{}
+
+func (lateTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	return &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: &lateBody{ctx: r.Context()}, Request: r}, nil
+}
+
+// TestDoRejectsResponseCompletedAfterDeadline deterministically covers the race
+// where a response is fully read after the deadline fired: Do must report a
+// transport timeout rather than a 200 with a (possibly empty) body.
+func TestDoRejectsResponseCompletedAfterDeadline(t *testing.T) {
+	ca := testtls.NewCA(t)
+	cfg := clientConfig(ca, ca.Issue(t, "admin-ui"), "https://127.0.0.1:9701", "admin-ui")
+	cfg.Timeout = 50 * time.Millisecond
+	c := newClient(t, cfg)
+	c.client.Transport = lateTransport{}
+	resp, err := c.Do(context.Background(), GetUserdata, nil, nil)
+	if resp != nil {
+		_ = resp.Body.Close()
+		t.Fatalf("response completed after the deadline was returned: %d", resp.StatusCode)
+	}
+	var unavailable *UnavailableError
+	if !errors.As(err, &unavailable) || unavailable.Reason != ReasonTransport || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("late response not reported as transport timeout: %v", err)
+	}
+	// A caller deadline earlier than the client timeout also applies.
+	cfg.Timeout = 30 * time.Second
+	c = newClient(t, cfg)
+	c.client.Transport = lateTransport{}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if resp, err := c.Do(ctx, GetUserdata, nil, nil); err == nil || !errors.Is(err, ErrUnavailable) {
+		if resp != nil {
+			_ = resp.Body.Close()
+		}
+		t.Fatalf("late response beat caller deadline: %v", err)
 	}
 }
 
