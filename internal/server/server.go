@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -35,7 +36,15 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/userdata", s.handleUserdata)
 	mux.HandleFunc("/api/parental-policy", s.handleParentalPolicy)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		if r.Method == http.MethodHead {
+			return
+		}
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
 }
@@ -64,6 +73,9 @@ func (s *Server) Put(ctx context.Context, req *userdatav1.PutRequest) (*userdata
 		return nil, status.Error(codes.InvalidArgument, "invalid json blob")
 	}
 	blob, revision, err := s.store.Put(req.GetUserId(), incoming)
+	if errors.Is(err, store.ErrBlobTooLarge) {
+		return nil, status.Error(codes.ResourceExhausted, err.Error())
+	}
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
@@ -138,6 +150,10 @@ func (s *Server) writeBlob(w http.ResponseWriter, userID string, body []byte) {
 			return
 		}
 		blob, _, err := s.store.Put(userID, incoming)
+		if errors.Is(err, store.ErrBlobTooLarge) {
+			http.Error(w, "userdata blob too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
