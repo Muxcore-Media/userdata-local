@@ -32,6 +32,10 @@ MuxCore sidecar module (`userdata-local`).
 | `MUXCORE_MODULE_ID` | `userdata-local` | Module ID override |
 
 HTTP requests require `Authorization: Bearer <session>` validated via auth-local and `X-MuxCore-User-Id` matching the authenticated household user id.
+Secure HTTP additionally requires the verified module CN/method/path admission
+table in README (ADR-0033); module identity never replaces user authorization.
+`make build` packages `userdata-health` alongside the daemon; the probe loads only
+existing identity material and never enrolls or starts storage.
 
 ## Build
 

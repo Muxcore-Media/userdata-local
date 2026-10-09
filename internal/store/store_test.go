@@ -2,7 +2,9 @@ package store_test
 
 import (
 	"encoding/json"
+	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -198,5 +200,51 @@ func TestPutGetPreservesSnakeCaseParental(t *testing.T) {
 	}
 	if parental["pin_hash"] != "abc123def456" {
 		t.Fatalf("pin_hash=%v", parental["pin_hash"])
+	}
+}
+
+// A merged blob larger than the checked client can read (models.MaxBlobBytes)
+// is refused and leaves the stored blob and revision untouched; exactly the cap is accepted.
+func TestPutRefusesMergeBeyondMaxBlobBytes(t *testing.T) {
+	st := openTestStore(t)
+	favorite := func(id string, pad int) models.Blob {
+		return models.Blob{Favorites: map[string]models.FavoriteEntry{id: {
+			ID: id, Kind: models.MediaKindMovie, Title: strings.Repeat("a", pad), Href: "/m",
+		}}}
+	}
+	size := func(b models.Blob) int {
+		t.Helper()
+		raw, err := json.Marshal(b)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(raw)
+	}
+	const first = 3 << 20
+	// Padding that lands the merge of {one, two} exactly on the cap.
+	local := store.MergeBlob(store.MergeBlob(models.EmptyBlob(), favorite("one", first)), favorite("two", 0))
+	room := models.MaxBlobBytes - size(local)
+
+	if _, _, err := st.Put("u", favorite("one", first)); err != nil {
+		t.Fatal(err)
+	}
+	merged, revision, err := st.Put("u", favorite("two", room))
+	if err != nil || size(merged) != models.MaxBlobBytes || revision != 2 {
+		t.Fatalf("blob of exactly the cap refused: size=%d rev=%d err=%v", size(merged), revision, err)
+	}
+	stored, _, err := st.Get("u")
+	if err != nil || size(stored) != models.MaxBlobBytes {
+		t.Fatalf("stored blob of exactly the cap unreadable: %d %v", size(stored), err)
+	}
+	// One byte more (same favorite id, so a pure growth of the stored blob).
+	if _, _, err := st.Put("u", favorite("two", room+1)); !errors.Is(err, store.ErrBlobTooLarge) {
+		t.Fatalf("one byte over the cap accepted: %v", err)
+	}
+	if _, _, err := st.Put("u", favorite("three", 0)); !errors.Is(err, store.ErrBlobTooLarge) {
+		t.Fatalf("growth beyond the cap accepted: %v", err)
+	}
+	after, revision, err := st.Get("u")
+	if err != nil || revision != 2 || len(after.Favorites) != 2 || size(after) != models.MaxBlobBytes {
+		t.Fatalf("refused merge changed the stored blob: rev=%d favorites=%d err=%v", revision, len(after.Favorites), err)
 	}
 }

@@ -142,6 +142,13 @@ type Blob struct {
 	Queue     []QueueItem              `json:"queue,omitempty"`
 }
 
+// MaxBlobBytes bounds the JSON encoding of one stored/merged user blob. It equals
+// the checked HTTP client's response cap (httpclient.MaxResponseBytes), so any
+// blob the provider accepts, including the merge of successive PUTs, can still
+// be read back through the client; oversize merges are refused with
+// store.ErrBlobTooLarge (HTTP 413) instead of becoming unreadable.
+const MaxBlobBytes = 8 << 20
+
 // EmptyBlob returns a blob with default preferences initialized.
 func EmptyBlob() Blob {
 	prefs := DefaultPreferences()

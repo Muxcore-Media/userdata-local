@@ -16,10 +16,12 @@ RUN --mount=type=secret,id=gh_token,required=false \
 COPY . .
 RUN entry=./cmd/module; [ -d "$entry" ] || entry=.; \
     go build -trimpath -ldflags="-s -w" -o /out/module "$entry"
+RUN go build -trimpath -ldflags="-s -w" -o /out/userdata-health ./cmd/userdata-health
 
 FROM alpine:3.21
 RUN apk add --no-cache ca-certificates && adduser -D -h /data app
 USER app
 WORKDIR /app
 COPY --from=builder /out/module ./module
+COPY --from=builder /out/userdata-health ./userdata-health
 ENTRYPOINT ["./module"]

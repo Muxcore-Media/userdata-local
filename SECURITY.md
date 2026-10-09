@@ -15,7 +15,8 @@ userdata-local does **not** trust client-supplied identity headers or gRPC `user
 - Requires `Authorization: Bearer <session>` validated via **auth-local** (`AuthService.Validate`).
 - Requires `X-MuxCore-User-Id` to match the validated session user id.
 - Users with the `admin` role may access other household user ids.
-- `/health` remains unauthenticated.
+- Secure HTTP first requires an admitted verified mesh certificate CN on every
+  path. `/health` needs an admitted module but no user bearer; HEAD has no body.
 
 ### gRPC (`UserDataService`)
 
@@ -54,14 +55,33 @@ grant design remain required before claiming FR-PLAY-007 complete.
 
 - **gRPC listener** (`USERDATA_LOCAL_GRPC_ADDR`, default `:9703`): TLS enabled by default via `internal/grpctls` (auto-generated dev certs under `~/.muxcore/tls/userdata-local` or `MUXCORE_TLS_*` / `USERDATA_TLS_*`). Set `MUXCORE_INSECURE_DISABLE_TLS=true` for localhost plaintext dev only.
 - **Outbound auth-local dial**: uses the same mesh client TLS material (`MUXCORE_TLS_CERT`, `MUXCORE_TLS_KEY`, `MUXCORE_TLS_CA`) unless insecure dev mode is enabled for localhost.
-- **HTTP** (`USERDATA_LOCAL_HTTP_ADDR`): serve behind a trusted reverse proxy or bind to localhost; session validation is the access control boundary.
+- **HTTP** (`USERDATA_LOCAL_HTTP_ADDR`): TLS-only outside explicit insecure dev,
+  with `RequireAndVerifyClientCert` and the explicit core CA. The listener's
+  certificate must identify `userdata-local` by CN and SAN. HTTP never adopts
+  gRPC's generated-CA or optional-client-cert behavior. Both configurations are
+  validated before opening either listener; partial startup closes resources.
+- **HTTP module admission**: the fixed README method/path table gates the entire
+  mux using the verified leaf CN. Unknown modules/methods/paths receive generic
+  no-store `403 userdata.module_forbidden` before auth/storage. The generic
+  `X-MuxCore-Error-Code` response header carries the same code for bodyless HEAD.
+  Application `403 policy.forbidden` retains its separate meaning.
+- **HTTP clients**: the public `httpclient` verifies normal CA/lifetime/EKU and
+  fixed `userdata-local` SAN plus exact CN, presents only the caller's own
+  identity, binds requests to one origin, forbids redirects/proxies and bounds
+  time/response sizes. No HTTP fallback, system-root fallback, global server-name
+  override, browser mesh identity or module-only user-data authority is offered.
+- **Helpers**: the shipped `userdata-health` executable uses existing configured
+  identity files or `MUXCORE_TLS_DIR` and a mounted CA. It never enrolls, consumes
+  bootstrap tokens, generates identity material or opens user storage.
 
 ## Configuration
 
 | Variable | Purpose |
 |----------|---------|
 | `AUTH_LOCAL_GRPC_ADDR` | auth-local gRPC dial target (default `localhost:9403`) |
-| `MUXCORE_TLS_*` / `USERDATA_TLS_*` | Listener and client TLS material |
-| `MUXCORE_INSECURE_DISABLE_TLS` | Dev-only plaintext gRPC (do not use in production) |
+| `MUXCORE_TLS_*` | HTTP and mesh certificate/key/CA, or existing helper identity directory |
+| `USERDATA_TLS_*` | Legacy gRPC-only overrides; never the HTTP identity |
+| `MUXCORE_PROFILE` | `household`/`staging` forbid insecure HTTP; unknown profiles fail |
+| `MUXCORE_INSECURE_DISABLE_TLS` | Explicit dev-only plaintext; HTTP also rejects insecure legacy aliases in household |
 
 Fixes umbrella [#32](https://github.com/Muxcore-Media/umbrella/issues/32).
