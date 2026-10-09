@@ -20,12 +20,15 @@ import (
 	"time"
 
 	"github.com/Muxcore-Media/userdata-local/internal/httptransport"
+	"github.com/Muxcore-Media/userdata-local/internal/models"
 )
 
 const (
-	DefaultTimeout   = 5 * time.Second
-	MaxTimeout       = 30 * time.Second
-	MaxResponseBytes = 8 << 20
+	DefaultTimeout = 5 * time.Second
+	MaxTimeout     = 30 * time.Second
+	// MaxResponseBytes equals the provider's maximum stored/merged blob size
+	// (models.MaxBlobBytes), so every blob the provider accepts is readable.
+	MaxResponseBytes = models.MaxBlobBytes
 )
 
 // ErrUnavailable distinguishes transport/admission failure from an authenticated
@@ -115,6 +118,7 @@ type Client struct {
 	origin    *url.URL
 	client    *http.Client
 	transport *http.Transport
+	timeout   time.Duration
 }
 
 func New(cfg Config) (*Client, error) {
@@ -159,10 +163,12 @@ func New(cfg Config) (*Client, error) {
 		MaxConnsPerHost: 16, MaxResponseHeaderBytes: 32 << 10,
 	}
 	client := &http.Client{
-		Transport: &originTransport{origin: *origin, next: transport}, Timeout: cfg.Timeout,
+		// The per-call deadline is enforced by Do's context, which Do re-checks
+		// after reading the body; http.Client.Timeout is deliberately not used.
+		Transport:     &originTransport{origin: *origin, next: transport},
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return errRedirect },
 	}
-	return &Client{origin: origin, client: client, transport: transport}, nil
+	return &Client{origin: origin, client: client, transport: transport, timeout: cfg.Timeout}, nil
 }
 
 // CloseIdleConnections releases idle connections during shutdown/reconfiguration.
@@ -179,6 +185,10 @@ func (c *Client) Do(ctx context.Context, op Operation, headers http.Header, body
 	if err != nil {
 		return nil, err
 	}
+	// One deadline covers connect, request, headers and the whole body read.
+	// A caller's earlier deadline or cancellation still wins.
+	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
 	target := *c.origin
 	target.Path = path
 	req, err := http.NewRequestWithContext(ctx, method, target.String(), body)
@@ -200,6 +210,12 @@ func (c *Client) Do(ctx context.Context, op Operation, headers http.Header, body
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, MaxResponseBytes+1))
 	if err != nil {
+		return nil, &UnavailableError{Reason: ReasonTransport, Cause: err}
+	}
+	// A server (or net/http racing the connection teardown) can complete a
+	// response after the deadline has fired; that is not "read completely
+	// within the deadline", so never hand it to the caller as a success.
+	if err := ctx.Err(); err != nil {
 		return nil, &UnavailableError{Reason: ReasonTransport, Cause: err}
 	}
 	if len(data) > MaxResponseBytes {
