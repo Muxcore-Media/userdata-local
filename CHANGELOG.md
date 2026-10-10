@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-10-10
+
 ### Added
 - ADR-0035/T-M4-07 slice E3: the shared `erasure.Reconciler` (core `sdk/go/module/erasure`
   v0.6.17, sdk/go/module v0.6.7) applies the identity provider's erasure ledger. One transaction
