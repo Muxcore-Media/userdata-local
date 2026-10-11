@@ -554,17 +554,30 @@ func TestNoEventSubscriptionPath(t *testing.T) {
 
 func TestSetupErasureConfiguration(t *testing.T) {
 	ctx := context.Background()
+	// Init opens the store before setupErasure installs the last-seen lookup.
+	// Direct configuration fixtures must supply that same precondition.
+	newConfiguredModule := func(t *testing.T, cfg Config) *Module {
+		t.Helper()
+		m := NewModule(cfg)
+		var err error
+		m.store, err = store.New(m.dbPath)
+		if err != nil {
+			t.Fatalf("configuration fixture store: %v", err)
+		}
+		t.Cleanup(func() { _ = m.Stop(ctx) })
+		return m
+	}
 	t.Run("household requires a core connection", func(t *testing.T) {
 		clearMeshEnv(t)
 		t.Setenv("MUXCORE_PROFILE", "household")
-		m := NewModule(Config{DBPath: filepath.Join(t.TempDir(), "u.db")})
+		m := newConfiguredModule(t, Config{DBPath: filepath.Join(t.TempDir(), "u.db")})
 		if err := m.setupErasure(); err == nil {
 			t.Fatal("household without a core connection started")
 		}
 	})
 	t.Run("dev without core disables with a warning", func(t *testing.T) {
 		devEnv(t)
-		m := NewModule(Config{DBPath: filepath.Join(t.TempDir(), "u.db")})
+		m := newConfiguredModule(t, Config{DBPath: filepath.Join(t.TempDir(), "u.db")})
 		if err := m.setupErasure(); err != nil || m.Reconciler() != nil {
 			t.Fatalf("dev: %v %v", err, m.Reconciler())
 		}
@@ -573,7 +586,7 @@ func TestSetupErasureConfiguration(t *testing.T) {
 		devEnv(t)
 		t.Setenv(erasure.EnvSweepInterval, "soon")
 		dialer := &erasure.ProviderDialer{Discovery: erasuretest.NewDiscovery()}
-		m := NewModule(Config{DBPath: filepath.Join(t.TempDir(), "u.db"), ErasureDialer: dialer})
+		m := newConfiguredModule(t, Config{DBPath: filepath.Join(t.TempDir(), "u.db"), ErasureDialer: dialer})
 		if err := m.setupErasure(); err == nil {
 			t.Fatal("invalid ERASURE_SWEEP_INTERVAL accepted")
 		}
@@ -582,7 +595,7 @@ func TestSetupErasureConfiguration(t *testing.T) {
 		devEnv(t)
 		t.Setenv(erasure.EnvSweepInterval, "2m")
 		dialer := &erasure.ProviderDialer{Discovery: erasuretest.NewDiscovery()}
-		m := NewModule(Config{DBPath: filepath.Join(t.TempDir(), "u.db"), ErasureDialer: dialer})
+		m := newConfiguredModule(t, Config{DBPath: filepath.Join(t.TempDir(), "u.db"), ErasureDialer: dialer})
 		if err := m.setupErasure(); err != nil || m.Reconciler() == nil {
 			t.Fatalf("setup: %v", err)
 		}
