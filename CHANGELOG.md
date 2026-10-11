@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-10-11
+
+### Fixed
+- Reject surrounding whitespace in gRPC user IDs and shared blob writes so authorization
+  and storage cannot use different keys for the same account.
+- Erase and count legacy blob keys whose Go `strings.TrimSpace` value equals the deleted
+  account ID. Startup transactionally removes those aliases for already-applied erasures,
+  preserving their original counts and timestamps and rolling back on repair failure.
+- Refuse blob writes and parental-policy writes for or by users in the reconciler's
+  last-seen ledger, including after a failed erasure transaction. Durable applied-record
+  checks remain in place across restarts.
+
 ## [0.1.7] - 2026-10-10
 
 ### Added
