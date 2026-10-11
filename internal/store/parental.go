@@ -80,17 +80,19 @@ func (s *Store) PutParentalPolicy(ctx context.Context, scope parental.Scope, act
 	if err != nil {
 		return parental.Document{}, err
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	updatedAt := time.Now().UTC().Format(time.RFC3339Nano)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return parental.Document{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	// ADR-0035: no write for (or by) a user with an applied erasure, so a late
+	// ADR-0035: no write for (or by) a user with a seen or applied erasure, so a late
 	// request cannot recreate policy data or re-introduce the erased id as
 	// updated_by.
 	for _, id := range []string{scope.UserID, actor} {
-		erased, eerr := userErasedTx(ctx, tx, id)
+		erased, eerr := s.writeUserErasedLocked(ctx, tx, id)
 		if eerr != nil {
 			return parental.Document{}, eerr
 		}

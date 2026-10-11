@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 
 	_ "modernc.org/sqlite"
@@ -17,10 +18,15 @@ import (
 // models.MaxBlobBytes. The stored blob and revision are left unchanged.
 var ErrBlobTooLarge = errors.New("userdata blob too large")
 
+// ErrInvalidUserID prevents authorization and persistence from using different
+// keys for the same principal. Interior characters and case are not normalized.
+var ErrInvalidUserID = errors.New("user_id must be nonempty and have no surrounding whitespace")
+
 // Store persists per-user userdata blobs in SQLite.
 type Store struct {
-	db *sql.DB
-	mu sync.Mutex
+	db          *sql.DB
+	mu          sync.Mutex
+	erasureSeen func(string) bool // guarded by mu; memory-only, never calls the store
 }
 
 // New opens or creates the SQLite database.
@@ -36,7 +42,18 @@ func New(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if err := s.repairAppliedBlobAliases(context.Background()); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	return s, nil
+}
+
+func validateBlobUserID(userID string) error {
+	if userID == "" || strings.TrimSpace(userID) != userID {
+		return ErrInvalidUserID
+	}
+	return nil
 }
 
 func (s *Store) migrate() error {
@@ -57,15 +74,18 @@ func (s *Store) migrate() error {
 }
 
 // persistBlobLocked upserts the blob in one transaction that first refuses a
-// user with an applied erasure (ADR-0035), so a late write cannot resurrect
+// user with a seen or applied erasure (ADR-0035), so a late write cannot resurrect
 // erased data. The caller holds s.mu.
 func (s *Store) persistBlobLocked(ctx context.Context, userID string, raw []byte, revision int64) error {
+	if err := validateBlobUserID(userID); err != nil {
+		return err
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("persist blob: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	erased, err := userErasedTx(ctx, tx, userID)
+	erased, err := s.writeUserErasedLocked(ctx, tx, userID)
 	if err != nil {
 		return err
 	}
@@ -117,8 +137,8 @@ func (s *Store) Get(userID string) (models.Blob, int64, error) {
 
 // Put merges incoming into stored state and persists the result.
 func (s *Store) Put(userID string, incoming models.Blob) (models.Blob, int64, error) {
-	if userID == "" {
-		return models.Blob{}, 0, fmt.Errorf("user_id is required")
+	if err := validateBlobUserID(userID); err != nil {
+		return models.Blob{}, 0, err
 	}
 
 	s.mu.Lock()
@@ -188,6 +208,9 @@ func (s *Store) MarkWatched(userID, itemID string, watched bool) (models.Blob, i
 
 // ToggleFavorite adds or removes a favorite entry.
 func (s *Store) ToggleFavorite(userID string, entry models.FavoriteEntry) (models.Blob, int64, bool, error) {
+	if err := validateBlobUserID(userID); err != nil {
+		return models.Blob{}, 0, false, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

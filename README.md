@@ -281,17 +281,30 @@ tombstone. No event, header or HTTP/gRPC request on this module erases anything.
 Per tombstone, in **one** SQLite transaction that also inserts the `erasure_applied` record
 (`erasure_id`, `user_id`, `tenant_id`, `applied_at`, `counts_json`):
 
-- the user's `user_blobs` row is deleted (exact id; no viewer-profile sibling keys exist yet);
+- the user's `user_blobs` row and legacy blob keys whose Go `strings.TrimSpace` value
+  equals that id are deleted and counted. Case, prefixes and interior characters do not
+  establish ownership; no viewer-profile sibling keys exist yet;
 - the user's `parental_policies` row is deleted. User ids are globally unique, so deletion is by
   id; the tombstone's tenant is recorded, and a row for the same id under a different tenant is
   deleted too and reported separately as `parental_policies_other_tenant`;
 - other users' policies whose `updated_by` is the erased user are kept and `updated_by` becomes
   `deleted-user` (`parental_policies_updated_by` count).
 
-After the record exists, writes for that user id (`PUT /api/userdata`, `PUT /api/parental-policy`,
+New gRPC target IDs and shared blob writes reject surrounding whitespace instead of
+authorizing one ID and storing another. At startup, before the store is available,
+one transaction removes legacy padded blob aliases for already-applied canonical IDs.
+This covers erasures already recorded as OK by the provider and therefore skipped by
+the SDK on replay. The repair preserves erasure records, their original counts and timestamps,
+and parental-policy rows; a repair failure rolls back and refuses startup.
+
+Once the current process has seen a tombstone, or an applied record exists, writes for
+that user id (`PUT /api/userdata`, `PUT /api/parental-policy`,
 gRPC `Put`, and policy writes made *by* that id) are refused: HTTP `410` with
-`userdata.account_erased` / `policy.account_erased`, gRPC `FailedPrecondition`. The check reads the
-table on every write, so it survives restarts and does not rely on process memory. Reads are unchanged.
+`userdata.account_erased` / `policy.account_erased`, gRPC `FailedPrecondition`. The SDK's
+memory-only last-seen lookup is installed before serving and also refuses writes after
+a failed erasure transaction. The applied-record check remains the durable guard across
+restarts. These checks do not establish a startup ledger-readiness barrier or share
+unapplied last-seen state across processes. Authorized reads remain available.
 
 ---
 
