@@ -107,6 +107,7 @@ func (m *Module) setupErasure() error {
 		return err
 	}
 	m.reconciler = rec
+	m.store.SetErasureLookup(rec.Erased)
 	return nil
 }
 

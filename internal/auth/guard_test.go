@@ -127,3 +127,26 @@ func TestAuthorizeGRPC_RejectsSpoofedMeshMetadata(t *testing.T) {
 		t.Fatal("expected unauthenticated error for metadata-only caller")
 	}
 }
+
+func TestAuthorizeGRPCRejectsPaddedIDsBeforeCredentials(t *testing.T) {
+	guard := testGuard()
+	callers := map[string]context.Context{
+		"bearer": metadata.NewIncomingContext(context.Background(), metadata.Pairs(auth.AuthTokenMetadataKey, "alice-token")),
+		"mesh":   auth.VerifiedMeshContext("media-ui"),
+		"absent": context.Background(),
+	}
+	for name, ctx := range callers {
+		t.Run(name, func(t *testing.T) {
+			for _, userID := range []string{" alice", "alice ", "\talice\n", "\ralice\v", "\u2003alice\u00a0", "\u2028alice\u3000", "\t"} {
+				if err := guard.AuthorizeGRPC(ctx, userID); status.Code(err) != codes.InvalidArgument {
+					t.Errorf("padded id %q: %v", userID, err)
+				}
+			}
+		})
+	}
+	for _, userID := range []string{"alice", "Alice", "alice-next", "alice~p~child", "alice smith", "alice\u200b"} {
+		if err := guard.AuthorizeGRPC(callers["mesh"], userID); err != nil {
+			t.Errorf("canonical mesh id %q refused: %v", userID, err)
+		}
+	}
+}

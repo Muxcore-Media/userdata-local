@@ -54,9 +54,11 @@ func (g *Guard) AuthenticateHTTP(r *http.Request) (contracts.Session, string, er
 // Verified mesh peers (mTLS client cert CN) are trusted service accounts.
 // Otherwise a bearer/x-auth-token session must match targetUserID or be admin.
 func (g *Guard) AuthorizeGRPC(ctx context.Context, targetUserID string) error {
-	targetUserID = strings.TrimSpace(targetUserID)
 	if targetUserID == "" {
 		return status.Error(codes.InvalidArgument, "user_id is required")
+	}
+	if strings.TrimSpace(targetUserID) != targetUserID {
+		return status.Error(codes.InvalidArgument, "user_id must not contain surrounding whitespace")
 	}
 	if _, ok := meshCallerFromContext(ctx); ok {
 		return nil

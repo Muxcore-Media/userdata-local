@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -13,10 +14,28 @@ import (
 // the single-transaction EraseUser, the post-condition count and the
 // persistent refusal of writes for an erased user id.
 
-// ErrUserErased is returned by every write path for a user id that has an
-// erasure_applied record. It is read from the table on every write, so it
-// survives restarts and never depends on process memory.
+// ErrUserErased refuses writes for ids seen in this process's ledger or with a
+// durable erasure_applied record. The durable guard also survives restarts.
 var ErrUserErased = errors.New("user erased")
+
+// SetErasureLookup installs the reconciler's last-seen lookup before serving.
+// The callback must be memory-only and must not call back into Store. It is
+// invoked with s.mu held. The SDK releases its own lock before invoking any
+// owner method, so acquiring that lock here cannot invert the owner/store lock.
+func (s *Store) SetErasureLookup(lookup func(string) bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.erasureSeen = lookup
+}
+
+// writeUserErasedLocked combines the process's last-seen ledger (including
+// failed applications) with durable applied records. The caller holds s.mu.
+func (s *Store) writeUserErasedLocked(ctx context.Context, tx *sql.Tx, userID string) (bool, error) {
+	if s.erasureSeen != nil && s.erasureSeen(userID) {
+		return true, nil
+	}
+	return userErasedTx(ctx, tx, userID)
+}
 
 // AnonymisedActor replaces an erased user id in parental_policies.updated_by.
 const AnonymisedActor = "deleted-user"
@@ -84,8 +103,9 @@ func (s *Store) ErasureApplied(ctx context.Context, erasureID string) (bool, err
 // in erasure_applied; on any error nothing has changed.
 //
 // Disposition (ADR-0035 §3, userdata-local rows):
-//   - the user's user_blobs row is deleted (exact id only; no sibling keys
-//     exist at the pins);
+//   - the user's user_blobs row and legacy keys whose Go TrimSpace value is
+//     exactly that id are deleted; case, prefixes and interior characters
+//     never establish ownership;
 //   - the user's parental_policies row is deleted. User ids are globally
 //     unique, so deletion is by id: a row for the id under a different tenant
 //     than the tombstone's is deleted too and counted separately
@@ -99,6 +119,9 @@ func (s *Store) ErasureApplied(ctx context.Context, erasureID string) (bool, err
 func (s *Store) EraseUser(ctx context.Context, erasureID, userID, tenantID string) (map[string]int64, error) {
 	if erasureID == "" || userID == "" {
 		return nil, errors.New("erasure id and user id are required")
+	}
+	if err := validateBlobUserID(userID); err != nil {
+		return nil, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -134,8 +157,15 @@ func (s *Store) EraseUser(ctx context.Context, erasureID, userID, tenantID strin
 		counts[key] += n
 		return nil
 	}
-	if err := exec(CountUserBlobs, `DELETE FROM user_blobs WHERE user_id = ?`, userID); err != nil {
+	keys, err := matchingBlobKeys(ctx, tx, func(key string) bool { return strings.TrimSpace(key) == userID })
+	if err != nil {
 		return nil, err
+	}
+	counts[CountUserBlobs] = 0
+	for _, key := range keys {
+		if err := exec(CountUserBlobs, `DELETE FROM user_blobs WHERE user_id = ?`, key); err != nil {
+			return nil, err
+		}
 	}
 	if err := exec(CountParentalPolicies, `DELETE FROM parental_policies WHERE user_id = ? AND tenant_id = ?`, userID, tenantID); err != nil {
 		return nil, err
@@ -160,17 +190,25 @@ func (s *Store) EraseUser(ctx context.Context, erasureID, userID, tenantID strin
 	return counts, nil
 }
 
-// CountUserRows counts the rows that still carry userID: its user_blobs row,
+// CountUserRows counts the rows that still carry userID: its user_blobs row and
+// legacy TrimSpace-equivalent blob keys,
 // its parental_policies rows (any tenant) and policies whose updated_by is the
 // user. It is the post-condition of EraseUser and must be 0 afterwards.
 func (s *Store) CountUserRows(ctx context.Context, userID string) (int, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin count user rows: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	keys, err := matchingBlobKeys(ctx, tx, func(key string) bool { return strings.TrimSpace(key) == userID })
+	if err != nil {
+		return 0, err
+	}
 	var n int
-	err := s.db.QueryRowContext(ctx, `SELECT
-		(SELECT COUNT(*) FROM user_blobs WHERE user_id = ?) +
-		(SELECT COUNT(*) FROM parental_policies WHERE user_id = ? OR updated_by = ?)`,
-		userID, userID, userID).Scan(&n)
+	err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM parental_policies WHERE user_id = ? OR updated_by = ?`,
+		userID, userID).Scan(&n)
 	if err != nil {
 		return 0, fmt.Errorf("count user rows: %w", err)
 	}
-	return n, nil
+	return len(keys) + n, nil
 }
