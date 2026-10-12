@@ -17,6 +17,14 @@ import (
 // GetConditional returns a raw, scoped read without creating a row or running
 // legacy defaults/merge. An absent row is not proof of never-written state.
 func (s *Store) GetConditional(ctx context.Context, userID string) (conditional.Document, error) {
+	return s.getConditional(ctx, userID, conditional.Capability, conditional.Operations())
+}
+
+func (s *Store) GetConditionalV3(ctx context.Context, userID string) (conditional.Document, error) {
+	return s.getConditional(ctx, userID, conditional.CapabilityV3, conditional.OperationsV3())
+}
+
+func (s *Store) getConditional(ctx context.Context, userID, capability string, operations []string) (conditional.Document, error) {
 	if !conditional.ValidID(userID) {
 		return conditional.Document{}, conditional.InvalidPrecondition
 	}
@@ -24,7 +32,7 @@ func (s *Store) GetConditional(ctx context.Context, userID string) (conditional.
 	if err != nil {
 		return conditional.Document{}, err
 	}
-	document := s.conditionalDocument(userID, raw, revision)
+	document := s.conditionalDocument(userID, raw, revision, capability, operations)
 	if _, err := conditional.EncodeDocument(document); err != nil {
 		return conditional.Document{}, conditional.StorageUnavailable
 	}
@@ -47,11 +55,11 @@ func readConditional(ctx context.Context, q queryRower, userID string) (json.Raw
 	return raw, revision, nil
 }
 
-func (s *Store) conditionalDocument(userID string, raw json.RawMessage, revision int64) conditional.Document {
+func (s *Store) conditionalDocument(userID string, raw json.RawMessage, revision int64, capability string, operations []string) conditional.Document {
 	return conditional.Document{
-		Contract: conditional.Capability, Authority: s.authority, UserID: userID, TenantID: "",
+		Contract: capability, Authority: s.authority, UserID: userID, TenantID: "",
 		Revision: strconv.FormatInt(revision, 10), Exists: revision > 0,
-		Operations: conditional.Operations(), LegacyWrites: true, Blob: raw,
+		Operations: operations, LegacyWrites: true, Blob: raw,
 	}
 }
 
@@ -62,6 +70,20 @@ func (s *Store) PutConditional(ctx context.Context, userID string, update condit
 	if err := conditional.ValidateUpdate(update); err != nil {
 		return conditional.Document{}, err
 	}
+	return s.putConditional(ctx, userID, update, conditional.Operations(), conditional.Apply)
+}
+
+func (s *Store) PutConditionalV3(ctx context.Context, userID string, update conditional.Update) (conditional.Document, error) {
+	if err := conditional.ValidateUpdateV3(update); err != nil {
+		return conditional.Document{}, err
+	}
+	return s.putConditional(ctx, userID, update, conditional.OperationsV3(), func(raw, patch json.RawMessage) (json.RawMessage, error) {
+		// Sample once after this transaction has checked erasure and preconditions.
+		return conditional.ApplyV3(raw, patch, time.Now())
+	})
+}
+
+func (s *Store) putConditional(ctx context.Context, userID string, update conditional.Update, operations []string, apply func(json.RawMessage, json.RawMessage) (json.RawMessage, error)) (conditional.Document, error) {
 	if !conditional.ValidID(userID) || update.Expected.UserID != userID || update.Expected.TenantID != "" {
 		return conditional.Document{}, conditional.InvalidPrecondition
 	}
@@ -124,11 +146,11 @@ func (s *Store) PutConditional(ctx context.Context, userID string, update condit
 	if revision == math.MaxInt64 {
 		return conditional.Document{}, conditional.RevisionExhausted
 	}
-	merged, err := conditional.Apply(raw, update.Mutation)
+	merged, err := apply(raw, update.Mutation)
 	if err != nil {
 		return conditional.Document{}, err
 	}
-	document := s.conditionalDocument(userID, merged, revision+1)
+	document := s.conditionalDocument(userID, merged, revision+1, update.Contract, operations)
 	document.Outcome, document.RequestID, document.PreviousRevision = "applied", update.RequestID, update.Expected.Revision
 	if _, err := conditional.EncodeDocument(document); err != nil {
 		return conditional.Document{}, err

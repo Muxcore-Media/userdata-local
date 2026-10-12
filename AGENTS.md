@@ -7,7 +7,7 @@ MuxCore sidecar module (`userdata-local`).
 | Field | Value |
 |-------|-------|
 | Directory | `userdata-local` |
-| Capabilities | `userdata.local`, `settings`, `userdata.parental-policy.v1`, `userdata.conditional.v2` |
+| Capabilities | `userdata.local`, `settings`, `userdata.parental-policy.v1`, `userdata.conditional.v2`, `userdata.conditional.v3` |
 | Contracts | none declared (blob JSON matches muxcore-ios / media-ui-app) |
 
 ## Agent rules
@@ -51,6 +51,7 @@ make build
 - gRPC: `muxcore.userdata.v1.UserDataService` (`Get`, `Put`, `ListContinueWatching`)
 - HTTP: `GET/PUT /api/userdata` with JSON blob body
 - HTTP: additive `GET/PUT /api/userdata/v2` (ADR-0038), media-ui module only with fresh self bearer and verified empty tenant. Raw five-family conditional mutations; progress/watched unsupported. Decimal string revisions, per-Store authority epoch and correlation-only request IDs. Legacy writers stay enabled; no consumer activation or strong removal/durability claim. See README.
+- HTTP: separate `GET/PUT /api/userdata/v3` (ADR-0041), the same admission/scope/authority/row and five families plus explicit progress report, watched and removal commands. Successful CAS defines state order; clocks never select a winner. Match ACKs to immutable dispatched requests. V2 stays unchanged; legacy writers, consumer cutover and device durability remain separate concerns. See README.
 - HTTP: `GET/PUT /api/parental-policy`; fresh bearer, verified tenant, self/admin reads and admin-only revision-checked writes (README contract)
 - Store: SQLite `user_blobs` keyed by `user_id`; independent `parental_policies` keyed by `(tenant_id,user_id)`; `erasure_applied` records ADR-0035 erasures and makes writes for an erased user id fail (`410 userdata.account_erased` / `policy.account_erased`)
 - Erasure: only the identity provider's ledger, via `erasure.Reconciler` (`internal/erasure.go`), may erase; never add an event/HTTP trigger

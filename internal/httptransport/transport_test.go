@@ -55,7 +55,7 @@ func TestTLSAdmissionExactTable(t *testing.T) {
 	for _, cn := range []string{"media-ui", "admin-ui", Provider, "health-monitor", "jellyfin", "muxcore", "Admin-ui", "admin-ui.attacker", ""} {
 		id := ca.Issue(t, cn)
 		client := rawClient(t, ca, &id.Pair)
-		for _, path := range []string{"/api/parental-policy", "/api/userdata", "/api/userdata/v2", "/api/userdata/v2/", "/api/userdata/%762", "/health", "/other", "/api/userdata/", "//health", "/api/%75serdata"} {
+		for _, path := range []string{"/api/parental-policy", "/api/userdata", "/api/userdata/v2", "/api/userdata/v2/", "/api/userdata/v3", "/api/userdata/v3/", "/api/userdata/%763", "/api/userdata/%762", "/health", "/other", "/api/userdata/", "//health", "/api/%75serdata"} {
 			for _, method := range []string{"GET", "HEAD", "PUT", "DELETE", "POST", "OPTIONS", "PATCH"} {
 				t.Run(cn+method+path, func(t *testing.T) {
 					before := calls.Load()
@@ -83,7 +83,7 @@ func TestTLSAdmissionExactTable(t *testing.T) {
 					if path == "/api/userdata" && (method == "GET" || method == "PUT") {
 						want = cn == "media-ui" || cn == "admin-ui"
 					}
-					if path == "/api/userdata/v2" && (method == "GET" || method == "PUT") {
+					if (path == "/api/userdata/v2" || path == "/api/userdata/v3") && (method == "GET" || method == "PUT") {
 						want = cn == "media-ui"
 					}
 					if path == "/api/parental-policy" {

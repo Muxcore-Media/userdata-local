@@ -1,6 +1,7 @@
-// Package conditional defines the additive household HTTP contract in ADR-0038.
+// Package conditional defines the additive household HTTP contracts in ADR-0038
+// (five-family v2) and ADR-0041 (v3 with explicit progress/watched commands).
 // Request IDs correlate responses only; this API supplies no durable receipts,
-// deduplication, writer enforcement or progress/watched mutation operation.
+// deduplication or writer enforcement.
 package conditional
 
 import (
@@ -138,6 +139,10 @@ func (p Precondition) Validate() error {
 }
 
 func DecodeUpdate(raw []byte) (Update, error) {
+	return decodeUpdate(raw, Capability, ValidateUpdate)
+}
+
+func decodeUpdate(raw []byte, capability string, validate func(Update) error) (Update, error) {
 	var update Update
 	if len(raw) > MaxRequestBytes {
 		return update, TooLarge
@@ -153,7 +158,7 @@ func DecodeUpdate(raw []byte) (Update, error) {
 	if !ok {
 		return update, InvalidBody
 	}
-	if contract != Capability {
+	if contract != capability {
 		return update, ProtocolUnsupported
 	}
 	expected, exists := fields["expected"]
@@ -172,7 +177,7 @@ func DecodeUpdate(raw []byte) (Update, error) {
 	if !exactFields(fields, []string{"contract", "request_id", "expected", "mutation"}) || json.Unmarshal(raw, &update) != nil {
 		return Update{}, InvalidBody
 	}
-	if err := ValidateUpdate(update); err != nil {
+	if err := validate(update); err != nil {
 		return Update{}, err
 	}
 	return update, nil
@@ -221,14 +226,14 @@ func EncodeDocument(document Document) ([]byte, error) {
 // DecodeDocument accepts reads only. DecodeAcknowledgment additionally binds a
 // successful PUT reply to the caller's immutable original dispatched update.
 func DecodeDocument(raw []byte) (Document, error) {
-	return decodeDocument(raw, nil)
+	return decodeDocument(raw, nil, Capability, Operations())
 }
 
 func DecodeAcknowledgment(raw []byte, update Update) (Document, error) {
-	return decodeDocument(raw, &update)
+	return decodeDocument(raw, &update, Capability, Operations())
 }
 
-func decodeDocument(raw []byte, update *Update) (Document, error) {
+func decodeDocument(raw []byte, update *Update, capability string, operations []string) (Document, error) {
 	var document Document
 	if len(raw) > MaxResponseBytes || ValidateJSON(raw) != nil {
 		return document, errors.New("invalid conditional response")
@@ -248,15 +253,15 @@ func decodeDocument(raw []byte, update *Update) (Document, error) {
 	}
 	revision, revErr := ParseRevision(document.Revision)
 	_, blobErr := object(document.Blob)
-	if document.Contract != Capability || document.Precondition().Validate() != nil ||
+	if document.Contract != capability || document.Precondition().Validate() != nil ||
 		revErr != nil || document.Exists != (revision > 0) || !document.LegacyWrites ||
-		!slices.Equal(document.Operations, Operations()) || blobErr != nil || len(document.Blob) > MaxBlobBytes ||
+		!slices.Equal(document.Operations, operations) || blobErr != nil || len(document.Blob) > MaxBlobBytes ||
 		(!bytes.Equal(fields["exists"], []byte("true")) && !bytes.Equal(fields["exists"], []byte("false"))) {
 		return Document{}, errors.New("invalid conditional response")
 	}
 	if update != nil {
 		previous, err := ParseRevision(update.Expected.Revision)
-		if update.Contract != Capability || update.Expected.Validate() != nil || !ValidRequestID(update.RequestID) ||
+		if update.Contract != capability || update.Expected.Validate() != nil || !ValidRequestID(update.RequestID) ||
 			err != nil || previous == math.MaxInt64 || revision != previous+1 ||
 			document.Outcome != "applied" || document.RequestID != update.RequestID ||
 			document.PreviousRevision != update.Expected.Revision || document.Authority != update.Expected.Authority ||
