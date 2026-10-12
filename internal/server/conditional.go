@@ -13,6 +13,14 @@ import (
 )
 
 func (s *Server) handleConditional(w http.ResponseWriter, r *http.Request) {
+	s.serveConditional(w, r, conditional.DecodeUpdate, s.store.GetConditional, s.store.PutConditional)
+}
+
+func (s *Server) handleConditionalV3(w http.ResponseWriter, r *http.Request) {
+	s.serveConditional(w, r, conditional.DecodeUpdateV3, s.store.GetConditionalV3, s.store.PutConditionalV3)
+}
+
+func (s *Server) serveConditional(w http.ResponseWriter, r *http.Request, decode func([]byte) (conditional.Update, error), get func(context.Context, string) (conditional.Document, error), put func(context.Context, string, conditional.Update) (conditional.Document, error)) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/json")
 	if r.Method != http.MethodGet && r.Method != http.MethodPut {
@@ -34,7 +42,7 @@ func (s *Server) handleConditional(w http.ResponseWriter, r *http.Request) {
 	}
 	var document conditional.Document
 	if r.Method == http.MethodGet {
-		document, err = s.store.GetConditional(ctx, userID)
+		document, err = get(ctx, userID)
 	} else {
 		body, readErr := io.ReadAll(http.MaxBytesReader(w, r.Body, conditional.MaxRequestBytes))
 		if readErr != nil {
@@ -46,12 +54,12 @@ func (s *Server) handleConditional(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
-		update, decodeErr := conditional.DecodeUpdate(body)
+		update, decodeErr := decode(body)
 		if decodeErr != nil {
 			writeConditionalError(w, decodeErr)
 			return
 		}
-		document, err = s.store.PutConditional(ctx, userID, update)
+		document, err = put(ctx, userID, update)
 	}
 	if err != nil {
 		writeConditionalError(w, err)

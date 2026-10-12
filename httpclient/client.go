@@ -94,6 +94,8 @@ const (
 	HeadHealth
 	GetUserdataV2
 	PutUserdataV2
+	GetUserdataV3
+	PutUserdataV3
 )
 
 func (op Operation) route() (string, string, error) {
@@ -114,6 +116,10 @@ func (op Operation) route() (string, string, error) {
 		return http.MethodGet, conditional.Path, nil
 	case PutUserdataV2:
 		return http.MethodPut, conditional.Path, nil
+	case GetUserdataV3:
+		return http.MethodGet, conditional.PathV3, nil
+	case PutUserdataV3:
+		return http.MethodPut, conditional.PathV3, nil
 	default:
 		return "", "", fmt.Errorf("userdata HTTP: unsupported operation")
 	}
@@ -217,7 +223,7 @@ func (c *Client) Do(ctx context.Context, op Operation, headers http.Header, body
 		return nil, &UnavailableError{Reason: ReasonRedirect}
 	}
 	maxResponseBytes := MaxResponseBytes
-	if op == GetUserdataV2 || op == PutUserdataV2 {
+	if op == GetUserdataV2 || op == PutUserdataV2 || op == GetUserdataV3 || op == PutUserdataV3 {
 		maxResponseBytes = conditional.MaxResponseBytes
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, int64(maxResponseBytes)+1))

@@ -11,7 +11,8 @@
     "userdata.local",
     "settings",
     "userdata.parental-policy.v1",
-    "userdata.conditional.v2"
+    "userdata.conditional.v2",
+    "userdata.conditional.v3"
   ],
   "contracts": []
 }

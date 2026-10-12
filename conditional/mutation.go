@@ -19,6 +19,10 @@ type mutation struct {
 }
 
 func decodeMutation(raw []byte) (mutation, error) {
+	return decodeBaseMutation(raw, true)
+}
+
+func decodeBaseMutation(raw []byte, requireIntent bool) (mutation, error) {
 	result := mutation{maps: map[string]mapOperation{}}
 	fields, err := object(raw)
 	if err != nil {
@@ -63,7 +67,7 @@ func decodeMutation(raw []byte) (mutation, error) {
 			return result, MutationUnsupported
 		}
 	}
-	if !intent {
+	if requireIntent && !intent {
 		return result, InvalidBody
 	}
 	return result, nil
@@ -218,6 +222,10 @@ func Apply(stored, patch json.RawMessage) (json.RawMessage, error) {
 	if err != nil {
 		return nil, err
 	}
+	return applyMutation(stored, mutation, nil)
+}
+
+func applyMutation(stored json.RawMessage, mutation mutation, after func(map[string]json.RawMessage) error) (json.RawMessage, error) {
 	document, _ := object(stored)
 	for family, value := range mutation.fields {
 		switch family {
@@ -258,6 +266,11 @@ func Apply(stored, patch json.RawMessage) (json.RawMessage, error) {
 		}
 		if family != "wantToWatch" && !compatible(family, document[family]) {
 			return nil, StorageUnavailable
+		}
+	}
+	if after != nil {
+		if err := after(document); err != nil {
+			return nil, err
 		}
 	}
 	result, err := Encode(document)

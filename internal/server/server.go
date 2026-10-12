@@ -45,6 +45,7 @@ func (s *Server) RegisterWithGRPC(srv *grpc.Server) {
 func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/userdata", s.handleUserdata)
 	mux.HandleFunc(conditional.Path, s.handleConditional)
+	mux.HandleFunc(conditional.PathV3, s.handleConditionalV3)
 	mux.HandleFunc("/api/parental-policy", s.handleParentalPolicy)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")

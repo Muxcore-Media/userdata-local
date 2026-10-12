@@ -3,13 +3,22 @@
 ## [Unreleased]
 
 ### Added
+- ADR-0041 separate `GET/PUT /api/userdata/v3`, public strict read/ACK/request
+  decoders and fixed checked-client operations. Raw progress reports, explicit
+  watched/unwatched commands and removals share the original row, Store authority
+  and atomic revision check with the other five mutation families.
+- V3 fixtures for numeric bounds and raw lexemes, timestamp grammar and CAS
+  ordering, Unicode aliases and explicit repair, mixed atomic refusals, v2/v3
+  contention, mTLS admission, erasure, stopped restore and uncertain replies.
+  V2 remains unchanged. Legacy writers stay enabled; no consumer activation,
+  completion policy, durable receipts, schema change or device acceptance.
 - ADR-0038 additive `GET/PUT /api/userdata/v2` with strict raw JSON, five explicit
   mutation families, atomic SQLite revision checks and a per-open authority epoch.
 - Fresh self/verified-household authorization, media-ui-only new-route admission,
   public conditional decoders and fixed checked-client v2 operations.
 - Parser/transport and provider/SQLite fixtures for raw preservation, refusals,
   exact acknowledgments, concurrency, erasure, reopen/restore and lost replies.
-  Legacy writers remain enabled; no progress/watched support, consumer activation,
+  Legacy writers remain enabled; v2 has no progress/watched support, consumer activation,
   receipts, schema change or cross-device durability acceptance is supplied.
 
 ## [0.1.8] - 2026-10-11

@@ -8,6 +8,105 @@ Tracked by https://github.com/Muxcore-Media/umbrella/issues/19 · Security: http
 
 ---
 
+## Unreleased conditional progress commands (ADR-0041)
+
+The separate `userdata.conditional.v3` capability exposes `GET`/`PUT
+`/api/userdata/v3` with the exact ordered operations `["prefs","favorites",
+"wantToWatch","playlists","queue","progress"]`. It shares the row, revision,
+Store authority and all five existing mutation semantics described below for v2.
+V2 still advertises exactly five operations and refuses progress; neither parser
+accepts the other version's envelopes. There is no gRPC or legacy merge change.
+
+V3 uses the same strict raw JSON/envelope and size rules, no-store replies,
+error codes, media-ui-only module admission, fresh self bearer/selector and
+verified empty tenant. The public `conditional` package adds `DecodeUpdateV3`,
+`DecodeDocumentV3` and `DecodeAcknowledgmentV3`; checked `httpclient` operations
+are `GetUserdataV3` and `PutUserdataV3`. The following is only a mutation value;
+the full request must carry `contract: "userdata.conditional.v3"`, a request ID
+and the original confirmed authority/scope/revision precondition.
+
+```json
+{
+  "progress": {
+    "report": {
+      "movie-1": {
+        "positionSec": 12.5,
+        "durationSec": 100,
+        "metadata": {"kind": "movie", "title": "Title"},
+        "observedAt": "2026-10-12T10:00:00+01:00"
+      }
+    },
+    "set_watched": {"movie-1": false},
+    "remove": ["movie-2"]
+  }
+}
+```
+
+| Progress command | Semantics |
+|---|---|
+| `report` | Non-null map of media IDs to objects with required `positionSec` and `durationSec`, optional non-null raw `metadata` object and optional `observedAt` string. No other report fields. Reports replace position/duration, overlay metadata shallowly and replace or remove the old observation time. |
+| `set_watched` | Non-null map of media IDs to exact booleans, applied after reports. Every affected retained entry with final `watched: true` gets canonical position `0`; false preserves position. |
+| `remove` | Non-null array of explicit IDs, including absent or malformed entries in a valid map. Reject duplicates and overlap with either other command. |
+
+Reports and watched commands may target the same ID. A rewind explicitly reports
+zero and sets watched false. Reports never infer completion, clamp position or
+compare clocks. Duration zero means unknown and position may exceed duration.
+Position/duration must be strict JSON numbers with mathematical value at least
+zero and a finite float64 parse; nonzero values that round to zero are invalid.
+Signed mathematical zero, ordinary decimals and finite subnormals are accepted.
+Validated numeric lexemes and arbitrary unknown metadata numbers stay raw, except
+the deliberate final watched-true position replacement.
+
+Metadata reserves `id`, `positionSec`, `durationSec`, `watched`, `updatedAt` and
+`observedAt`, including aliases. Known metadata `kind`, `title`, `href`,
+`poster_url` and `stream_url` requires canonical spelling and non-null strings.
+Known-field alias equivalence is Go `strings.EqualFold`, including Unicode simple
+case folding, without trimming or underscore rewriting. Unknown fields remain
+raw. IDs use the existing 256-byte bounds.
+
+New entries start with only the key as `id`, position `0` and duration `0`, plus
+supplied intent; report-only creation omits watched. An existing affected entry
+must be a non-null object without known-field aliases; an existing id must equal
+its key. Missing id is filled. These identity/alias checks precede overlays.
+After overlays, retained position/duration and metadata must remain valid;
+watched may be absent, null or boolean. Missing position/duration on existing
+entries stays missing. Explicit replacement can repair bad canonical values,
+including watched true replacing bad position; old updatedAt is always replaced.
+Malformed retained values refuse as `userdata.storage_unavailable`. Removal
+bypasses entry validation; unrelated entries are untouched.
+
+Empty progress collections add no intent. With another valid family, empty
+progress does not inspect or initialize stored progress. Any nonempty command
+requires a missing or object map; stored null/nonobjects refuse. Removing from a
+missing map creates `progress: {}`. At least one intent overall is required, and
+every successful request advances the shared revision once, including no-ops.
+Malformed progress commands yield `userdata.invalid_body`; unsupported top-level
+families yield `userdata.mutation_unsupported`. Mixed refusals change nothing.
+
+Successful CAS commit order defines state order. An older observation with a
+current precondition can replace a newer one. A single provider receipt time is
+written as `updatedAt` to affected retained entries, UTC with exactly nine
+fractional digits. Receipt clocks may repeat/regress and never select winners.
+Optional observedAt accepts only ASCII `YYYY-MM-DDTHH:MM:SS`, optional dot plus
+1–9 fractional digits, and `Z` or `±HH:MM`: valid Gregorian year 0000–9999, hours
+00–23 and minutes/seconds 00–59, with offset hours 00–23/minutes 00–59. UTC
+normalization must stay in years 0000–9999 and emits exactly nine fractional
+digits. Lowercase separators, spaces, comma fractions, leap seconds, excess
+precision, null and invalid dates refuse. Watched-only intent preserves valid
+original observedAt bytes; a report without observedAt removes it.
+
+Only a validated PUT ACK bound to the immutable dispatched v3 contract, request
+ID, scope, authority, previous revision and exact increment confirms intent.
+Storage failure, lost reply, timeout or malformed/mismatched ACK remains
+uncertain. GET, retry conflict and restart authority rotation cannot resolve it.
+There is no request-ID deduplication, automatic rebase, legacy downgrade or replay.
+Same-row v2 and legacy writes contend with v3; legacy writers can still undo
+removals and drop unknown data. Legacy ContinueWatching's ratio rule is unchanged
+and may hide explicitly unwatched near-end entries. Consumer completion/rewatch
+policy, all-family migration, scoped durable journals and every-writer enforcement
+need separate decisions. Manifest version stays `0.1.8`, untagged; no consumer
+activation, deployment or FR-PLAY-004/device durability acceptance is supplied.
+
 ## Unreleased conditional household userdata (ADR-0038)
 
 The additive `userdata.conditional.v2` capability exposes `GET`/`PUT
@@ -182,12 +281,12 @@ and `FromEnv` fail up front with a message naming the variable.
 Admission uses only the verified client certificate CN, before any HTTP handler,
 user lookup or storage access:
 
-| Module CN | `/api/parental-policy` | `/api/userdata` | `/health` |
-|-----------|------------------------|-----------------|-----------|
-| `media-ui` | GET | GET, PUT | GET, HEAD |
-| `admin-ui` | GET, PUT | GET, PUT | GET, HEAD |
-| `userdata-local`, `health-monitor` | denied | denied | GET, HEAD |
-| All others (including `jellyfin`, `muxcore`) | denied | denied | denied |
+| Module CN | `/api/parental-policy` | `/api/userdata` | `/api/userdata/v2`, `/api/userdata/v3` | `/health` |
+|-----------|------------------------|-----------------|--------------------------------------|-----------|
+| `media-ui` | GET | GET, PUT | GET, PUT | GET, HEAD |
+| `admin-ui` | GET, PUT | GET, PUT | denied | GET, HEAD |
+| `userdata-local`, `health-monitor` | denied | denied | denied | GET, HEAD |
+| All others (including `jellyfin`, `muxcore`) | denied | denied | denied | denied |
 
 Untrusted/missing certificates fail the handshake. Admission denials return
 no-store 403 with exactly `{"code":"userdata.module_forbidden"}` and
@@ -239,7 +338,8 @@ response, err := client.Do(ctx, httpclient.GetPolicy, headers, nil)
 ```
 
 `Do` supports only `GetPolicy`, `PutPolicy`, `GetUserdata`, `PutUserdata`,
-`GetHealth` and `HeadHealth`; each operation fixes the method and path. Callers
+`GetHealth`, `HeadHealth`, `GetUserdataV2`, `PutUserdataV2`, `GetUserdataV3` and
+`PutUserdataV3`; each operation fixes the method and path. Callers
 derive the one bearer/target from their current server session; the package copies
 headers and never creates authorization. The configured origin has no path,
 credentials, query or fragment. HTTPS is mandatory in secure mode; explicit
@@ -287,6 +387,8 @@ Proto: `proto/muxcore/userdata/v1/userdata.proto`
 |--------|------|-------------|
 | `GET` | `/api/userdata` | Return merged blob for authenticated user |
 | `PUT` | `/api/userdata` | Merge request JSON blob (request body up to 4 MiB); return merged blob. A user with an applied erasure (ADR-0035) is refused with `410` and `{"code":"userdata.account_erased"}` (gRPC `Put`: `FailedPrecondition`, message `userdata.account_erased`). A merge whose JSON would exceed 8 MiB (the client's response cap) is refused with `413` and nothing is stored (gRPC `Put`: `ResourceExhausted`) |
+| `GET`, `PUT` | `/api/userdata/v2` | Strict conditional five-family read/mutation; fresh household self access through media-ui only (ADR-0038 above) |
+| `GET`, `PUT` | `/api/userdata/v3` | Separate conditional six-family read/mutation including explicit progress/watched commands (ADR-0041 above) |
 | `GET` | `/api/parental-policy` | Read authoritative policy for self or a same-tenant account as admin |
 | `PUT` | `/api/parental-policy` | Admin-only, revision-checked policy replacement |
 | `GET`, `HEAD` | `/health` | Admitted mesh health check; no user bearer, empty HEAD body |
@@ -300,7 +402,8 @@ Proto: `proto/muxcore/userdata/v1/userdata.proto`
 | `prefs` | Display/home/playback preferences (stored for sync), plus pass-through `parental` |
 | `playlists`, `queue` | Pass-through sections for client sync |
 
-Progress merge uses `updatedAt` (newer wins). Watched auto-detection uses the 92% threshold from native clients.
+Legacy progress merge uses `updatedAt` (newer wins). Legacy watched auto-detection
+uses the 92% threshold from native clients. V3 uses explicit commands and CAS.
 
 ### Authoritative parental policy (provider foundation)
 
