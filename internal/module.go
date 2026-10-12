@@ -19,6 +19,7 @@ import (
 	modulesdk "github.com/Muxcore-Media/core/sdk/go/module"
 	"github.com/Muxcore-Media/core/sdk/go/module/erasure"
 	manifest "github.com/Muxcore-Media/userdata-local"
+	"github.com/Muxcore-Media/userdata-local/conditional"
 	"github.com/Muxcore-Media/userdata-local/internal/auth"
 	"github.com/Muxcore-Media/userdata-local/internal/grpctls"
 	"github.com/Muxcore-Media/userdata-local/internal/httptransport"
@@ -127,7 +128,7 @@ func (m *Module) Info() contracts.ModuleInfo {
 		Roles:        []string{"household", "media"},
 		Description:  "Durable per-user household library state (progress, favorites, continue-watching)",
 		Author:       "MuxCore",
-		Capabilities: []string{"userdata.local", "settings", parental.Capability},
+		Capabilities: []string{"userdata.local", "settings", parental.Capability, conditional.Capability},
 		HTTPAddr:     m.httpAddr,
 	}
 }

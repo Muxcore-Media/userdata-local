@@ -2,10 +2,13 @@ package store
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 
@@ -27,17 +30,22 @@ type Store struct {
 	db          *sql.DB
 	mu          sync.Mutex
 	erasureSeen func(string) bool // guarded by mu; memory-only, never calls the store
+	authority   string            // random per open; never persisted or used as identity
 }
 
 // New opens or creates the SQLite database.
 func New(path string) (*Store, error) {
+	var epoch [32]byte
+	if _, err := io.ReadFull(rand.Reader, epoch[:]); err != nil {
+		return nil, fmt.Errorf("create userdata authority: %w", err)
+	}
 	db, err := sql.Open("sqlite", path+"?_journal_mode=WAL&_busy_timeout=5000")
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)
 	}
 	db.SetMaxOpenConns(1)
 
-	s := &Store{db: db}
+	s := &Store{db: db, authority: base64.RawURLEncoding.EncodeToString(epoch[:])}
 	if err := s.migrate(); err != nil {
 		_ = db.Close()
 		return nil, err

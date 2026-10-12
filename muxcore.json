@@ -10,7 +10,8 @@
   "capabilities": [
     "userdata.local",
     "settings",
-    "userdata.parental-policy.v1"
+    "userdata.parental-policy.v1",
+    "userdata.conditional.v2"
   ],
   "contracts": []
 }

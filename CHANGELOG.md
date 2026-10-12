@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Added
+- ADR-0038 additive `GET/PUT /api/userdata/v2` with strict raw JSON, five explicit
+  mutation families, atomic SQLite revision checks and a per-open authority epoch.
+- Fresh self/verified-household authorization, media-ui-only new-route admission,
+  public conditional decoders and fixed checked-client v2 operations.
+- Parser/transport and provider/SQLite fixtures for raw preservation, refusals,
+  exact acknowledgments, concurrency, erasure, reopen/restore and lost replies.
+  Legacy writers remain enabled; no progress/watched support, consumer activation,
+  receipts, schema change or cross-device durability acceptance is supplied.
+
 ## [0.1.8] - 2026-10-11
 
 ### Fixed

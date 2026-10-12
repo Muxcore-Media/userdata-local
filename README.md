@@ -8,6 +8,126 @@ Tracked by https://github.com/Muxcore-Media/umbrella/issues/19 · Security: http
 
 ---
 
+## Unreleased conditional household userdata (ADR-0038)
+
+The additive `userdata.conditional.v2` capability exposes `GET`/`PUT
+/api/userdata/v2`. Its ordered operation list is exactly `["prefs","favorites",
+"wantToWatch","playlists","queue"]`. Progress/watched mutations, including mixed
+requests, are refused atomically; existing progress stays raw and untouched.
+No gRPC operation changes.
+
+Only the verified `media-ui` module CN may use this new path in secure mode.
+Each request additionally needs one fresh `Authorization: Bearer` and one exact
+`X-MuxCore-User-Id`. The selector must equal the verified user even for admins,
+and the verified tenant must be empty. Existing tenant-aware identity resolution
+is required; module identity, tenant headers, legacy session defaults and
+`x-auth-token` cannot authorize this API.
+
+GET returns `contract`, `authority`, `user_id`, explicitly empty `tenant_id`,
+decimal-string `revision`, `exists`, ordered `operations`, `legacy_writes: true`
+and raw `blob`. Absence returns revision `"0"`, `exists: false` and in-memory
+default preferences plus empty collections. It creates no row and proves neither
+never-written history nor migration safety. Existing documents get no defaults.
+
+```json
+{
+  "contract": "userdata.conditional.v2",
+  "request_id": "settings-1",
+  "expected": {
+    "authority": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "user_id": "alice",
+    "tenant_id": "",
+    "revision": "7"
+  },
+  "mutation": {
+    "prefs": {"display": {"theme": "light"}},
+    "favorites": {"remove": ["movie-1"]},
+    "queue": []
+  }
+}
+```
+
+Use the authority/scope/revision from a confirmed GET, not this example token.
+Revisions are canonical decimal strings from `"0"` to `"9223372036854775807"`;
+the maximum cannot increment. All envelope/precondition fields are required.
+`request_id` is 1–128 ASCII characters from `[A-Za-z0-9._:-]`, for correlation
+only, never persistence or deduplication. A committed PUT returns the new GET
+envelope plus `outcome: "applied"`, echoed `request_id` and `previous_revision`.
+The new revision is exactly the expected revision plus one, even for valid data
+no-ops. GET never contains those acknowledgment members.
+
+Public package `conditional` supplies strict request/read/ACK decoders and raw
+JSON types. Fixed operations `httpclient.GetUserdataV2` and
+`httpclient.PutUserdataV2` use checked `Client.Do`. Match a PUT ACK to the immutable
+dispatched request, including scope, authority, request ID and exact revision.
+
+| Mutation | Presence and replacement |
+|---|---|
+| `prefs` | Non-null object; recursively merge objects. Omission preserves. Scalar/array/null replaces that member literally; null never means deletion. A supplied object replaces a non-object member or merges an object. |
+| `favorites`, `wantToWatch` | Non-null object with optional `set` object and `remove` array. Set entries are raw objects with string `id` equal to their key and replace the whole entry. Remove names explicit keys. Duplicate removals and set/remove overlap are invalid. |
+| `playlists`, `queue` | Non-null array replaces the whole collection; `[]` clears. Clients carry raw unknown fields forward in retained items. |
+
+At least one intent is required. Empty prefs/set/remove objects alone are
+rejected but may accompany another operation. A named preference member,
+removing an absent key, or supplying an array is intent. Missing target objects
+are initialized only as needed. Stored null/non-object top-level prefs/favorites/
+wantToWatch targets are refused; nested preference nulls remain literal values.
+Explicit arrays may replace any old value. Affected known sections are checked
+against legacy model types without serializing the validation copy. Unknown
+numeric tokens and unrelated raw values remain intact; whitespace and object
+order are not promises. `prefs.parental` never becomes policy authority.
+
+Reject duplicate decoded names at every level, invalid UTF-8, lone UTF-16
+surrogate escapes, trailing JSON, unknown envelope/operation members and nesting
+beyond 64 containers. Account/item IDs allow at most 256 UTF-8 bytes, no controls
+or surrounding whitespace. Queue/playlist IDs and playlist item IDs apply these
+bounds to every provided non-null string, including case-insensitive known-field
+aliases recognized by the legacy decoder. Omitted and literal-null identifiers
+remain raw. Both map families require the exact canonical `id`; every non-null
+case-insensitive ID alias must also equal the map key. Null aliases and unrelated
+unknown fields are preserved.
+
+Limits: request 4 MiB, encoded stored blob 8 MiB,
+v2 reply 8 MiB + 16 KiB. Shared encoding avoids HTML escaping amplification and
+checks actual blob/reply sizes before commit. Legacy client caps are unchanged.
+
+Every v2 response is JSON with `Cache-Control: no-store`. Errors contain only
+`code`:
+
+| HTTP | Codes, all prefixed `userdata.` |
+|---|---|
+| 400 | `protocol_unsupported`, `mutation_unsupported`, `invalid_body`, `invalid_precondition`, `invalid_query` |
+| 428 | `precondition_required` when `expected` is absent |
+| 401 | `unauthenticated` |
+| 403 | `forbidden`, `scope_unsupported`; transport keeps `module_forbidden` |
+| 405 | `method_not_allowed` with `Allow: GET, PUT` (secure admission refuses unsupported methods first) |
+| 409 | `authority_conflict`, `revision_conflict` |
+| 410 | Existing `account_erased` |
+| 413 | `too_large` |
+| 503 | `identity_unavailable`, `storage_unavailable`, `revision_exhausted` |
+
+Any query, including bare `?`, is invalid. Known schema/auth/admission/size/
+conflict/erasure/exhaustion refusals do not apply this request. Storage failure,
+lost response, timeout, or malformed/mismatched ACK is uncertain. A matching GET,
+retry conflict or changed authority cannot resolve an earlier uncertain write.
+No automatic rebase or full-document replay is implied.
+
+Each Store open generates a 32-byte cryptographic unpadded base64url authority,
+stable only for that open; entropy failure refuses startup. Run one active
+provider/Store per database. Stop and reopen for restore/reset; hot restore is
+unsupported. Reopen invalidates old tokens even when a revision is reused.
+SQLite `BEGIN IMMEDIATE` combines raw read, existing erasure checks, precondition,
+mutation and one increment in a transaction. Canceled transactions roll back
+before connection reuse. No DDL, receipt store or migration is introduced.
+
+This capability means additive support only. Legacy writers can resurrect
+removals and discard unknown data, including `wantToWatch`. No consumer is
+activated. The SPA's shared legacy progress push cannot safely coexist with
+selective v2 activation; every shared writer family, migration and enforcement
+need separate review. Rollback removes v2 support and must preserve uncertain/
+pending client intent without a legacy downgrade. Provider fixtures do not close
+cross-device durability or FR-PLAY-004.
+
 ## How it works
 
 ```

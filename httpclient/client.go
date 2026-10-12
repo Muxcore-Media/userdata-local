@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Muxcore-Media/userdata-local/conditional"
 	"github.com/Muxcore-Media/userdata-local/internal/httptransport"
 	"github.com/Muxcore-Media/userdata-local/internal/models"
 )
@@ -91,6 +92,8 @@ const (
 	PutUserdata
 	GetHealth
 	HeadHealth
+	GetUserdataV2
+	PutUserdataV2
 )
 
 func (op Operation) route() (string, string, error) {
@@ -107,6 +110,10 @@ func (op Operation) route() (string, string, error) {
 		return http.MethodGet, "/health", nil
 	case HeadHealth:
 		return http.MethodHead, "/health", nil
+	case GetUserdataV2:
+		return http.MethodGet, conditional.Path, nil
+	case PutUserdataV2:
+		return http.MethodPut, conditional.Path, nil
 	default:
 		return "", "", fmt.Errorf("userdata HTTP: unsupported operation")
 	}
@@ -178,7 +185,8 @@ var errRedirect = errors.New("userdata HTTP redirects are forbidden")
 
 // Do executes a fixed provider operation. Headers are copied unchanged; the
 // caller owns deriving the current bearer and target user. Responses are read
-// completely within the deadline and bounded to MaxResponseBytes. Application
+// completely within the deadline and bounded to MaxResponseBytes (v2 operations
+// use conditional.MaxResponseBytes to include the bounded metadata). Application
 // statuses are returned for the caller to interpret. Close the response body.
 func (c *Client) Do(ctx context.Context, op Operation, headers http.Header, body io.Reader) (*http.Response, error) {
 	method, path, err := op.route()
@@ -208,7 +216,11 @@ func (c *Client) Do(ctx context.Context, op Operation, headers http.Header, body
 	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
 		return nil, &UnavailableError{Reason: ReasonRedirect}
 	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, MaxResponseBytes+1))
+	maxResponseBytes := MaxResponseBytes
+	if op == GetUserdataV2 || op == PutUserdataV2 {
+		maxResponseBytes = conditional.MaxResponseBytes
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, int64(maxResponseBytes)+1))
 	if err != nil {
 		return nil, &UnavailableError{Reason: ReasonTransport, Cause: err}
 	}
@@ -218,7 +230,7 @@ func (c *Client) Do(ctx context.Context, op Operation, headers http.Header, body
 	if err := ctx.Err(); err != nil {
 		return nil, &UnavailableError{Reason: ReasonTransport, Cause: err}
 	}
-	if len(data) > MaxResponseBytes {
+	if len(data) > maxResponseBytes {
 		return nil, &UnavailableError{Reason: ReasonResponse}
 	}
 	if resp.StatusCode == http.StatusForbidden && len(data) <= 256 {

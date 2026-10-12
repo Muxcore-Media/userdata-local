@@ -30,7 +30,7 @@ func (s *Store) SetErasureLookup(lookup func(string) bool) {
 
 // writeUserErasedLocked combines the process's last-seen ledger (including
 // failed applications) with durable applied records. The caller holds s.mu.
-func (s *Store) writeUserErasedLocked(ctx context.Context, tx *sql.Tx, userID string) (bool, error) {
+func (s *Store) writeUserErasedLocked(ctx context.Context, tx queryRower, userID string) (bool, error) {
 	if s.erasureSeen != nil && s.erasureSeen(userID) {
 		return true, nil
 	}

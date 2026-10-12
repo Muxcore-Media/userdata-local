@@ -269,7 +269,7 @@ func TestClientBoundsProxyCancellationAndOperations(t *testing.T) {
 	}))
 	cfg := clientConfig(ca, caller, s.URL, "admin-ui")
 	c := newClient(t, cfg)
-	for op, want := range map[Operation]string{GetPolicy: "GET /api/parental-policy", PutPolicy: "PUT /api/parental-policy", GetUserdata: "GET /api/userdata", PutUserdata: "PUT /api/userdata", GetHealth: "GET /health", HeadHealth: "HEAD /health"} {
+	for op, want := range map[Operation]string{GetPolicy: "GET /api/parental-policy", PutPolicy: "PUT /api/parental-policy", GetUserdata: "GET /api/userdata", PutUserdata: "PUT /api/userdata", GetHealth: "GET /health", HeadHealth: "HEAD /health", GetUserdataV2: "GET /api/userdata/v2", PutUserdataV2: "PUT /api/userdata/v2"} {
 		resp, err := c.Do(context.Background(), op, nil, nil)
 		if err != nil {
 			t.Fatal(err)
