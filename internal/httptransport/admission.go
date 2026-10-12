@@ -37,6 +37,8 @@ func allowed(cn, method, path string) bool {
 			(cn == "admin-ui" && (method == http.MethodGet || method == http.MethodPut))
 	case "/api/userdata":
 		return (cn == "media-ui" || cn == "admin-ui") && (method == http.MethodGet || method == http.MethodPut)
+	case "/api/userdata/v2":
+		return cn == "media-ui" && (method == http.MethodGet || method == http.MethodPut)
 	default:
 		return false
 	}
